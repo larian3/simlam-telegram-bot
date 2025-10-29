@@ -1,0 +1,24 @@
+# Ambiente Virtual
+venv/
+/venv/
+.venv/
+
+# Arquivos de Cache do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Arquivos de estado do Bot
+monitored_processes.json
+process_states.json
+
+# Arquivos de configuração de IDEs e Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Arquivos do Sistema Operacional
+.DS_Store
+Thumbs.db
