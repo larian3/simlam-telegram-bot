@@ -4,6 +4,8 @@ from simlam_scraper import buscar_processo
 import logging
 import os
 import json
+import threading
+from flask import Flask
 
 # Configuração de logging
 logging.basicConfig(
@@ -18,6 +20,20 @@ TOKEN = os.getenv("BOT_TOKEN")
 MONITORED_PROCESSES_FILE = 'monitored_processes.json'
 PROCESS_STATES_FILE = 'process_states.json'
 
+# --- Flask App ---
+# This is a minimal web server to keep the bot alive on free hosting platforms.
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def index():
+    return "Bot is running!"
+
+def run_flask():
+    # Use a port assigned by the hosting platform, or 8080 as a default.
+    port = int(os.environ.get('PORT', 8080))
+    flask_app.run(host='0.0.0.0', port=port)
+
+# --- Bot Logic ---
 def load_data(filename):
     """Carrega dados de um arquivo JSON."""
     if not os.path.exists(filename):
@@ -173,6 +189,10 @@ def main():
     if not TOKEN:
         print("Erro: BOT_TOKEN não foi configurado como variável de ambiente.")
         return
+
+    # Run Flask app in a separate thread
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
 
     app = ApplicationBuilder().token(TOKEN).build()
     job_queue = app.job_queue

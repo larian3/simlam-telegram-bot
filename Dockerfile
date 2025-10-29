@@ -13,5 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application's code into the container at /app
 COPY . .
 
+# Expose the port the Flask app will run on
+EXPOSE 8080
+
 # Command to run the application when the container launches
 CMD ["python", "bot.py"]
