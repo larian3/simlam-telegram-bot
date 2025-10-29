@@ -204,8 +204,8 @@ def main():
     app.add_handler(CommandHandler("listar", listar))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
 
-    # Agenda o job para rodar a cada 10 minutos (600 segundos)
-    job_queue.run_repeating(check_updates, interval=600, first=10)
+    # Agenda o job para rodar a cada 3 horas (10800 segundos)
+    job_queue.run_repeating(check_updates, interval=10800, first=10)
 
     print("Bot rodando...")
     app.run_polling()
