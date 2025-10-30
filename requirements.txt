@@ -5,3 +5,5 @@ PyMuPDF
 rich
 Flask
 pytz
+SQLAlchemy
+psycopg2-binary
