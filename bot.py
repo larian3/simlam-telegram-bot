@@ -1,10 +1,13 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.helpers import escape_markdown
 from simlam_scraper import buscar_processo
 import logging
 import os
 import json
 import threading
+import asyncio
+import hashlib
 from flask import Flask
 from datetime import time
 import pytz
@@ -22,6 +25,9 @@ TOKEN = os.getenv("BOT_TOKEN")
 MONITORED_PROCESSES_FILE = 'monitored_processes.json'
 PROCESS_STATES_FILE = 'process_states.json'
 
+# Lock para acesso concorrente aos arquivos JSON
+json_lock = threading.Lock()
+
 # --- Flask App ---
 # This is a minimal web server to keep the bot alive on free hosting platforms.
 flask_app = Flask(__name__)
@@ -37,16 +43,22 @@ def run_flask():
 
 # --- Bot Logic ---
 def load_data(filename):
-    """Carrega dados de um arquivo JSON."""
-    if not os.path.exists(filename):
-        return {}
-    with open(filename, 'r') as f:
-        return json.load(f)
+    """Carrega dados de um arquivo JSON de forma segura."""
+    with json_lock:
+        if not os.path.exists(filename):
+            return {}
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            # Se o arquivo estiver corrompido ou não for encontrado, retorna um dicionário vazio.
+            return {}
 
 def save_data(data, filename):
-    """Salva dados em um arquivo JSON."""
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=4)
+    """Salva dados em um arquivo JSON de forma segura."""
+    with json_lock:
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
@@ -65,59 +77,120 @@ async def consultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.effective_message.reply_text(f"🔎 Buscando informações do processo {numero}, aguarde...")
-    resultado = buscar_processo(numero)
-    # Telegram usa MarkdownV2 por padrão em algumas versões, vamos escapar caracteres
-    await update.effective_message.reply_text(resultado, parse_mode='Markdown')
+    # Roda a função síncrona em uma thread separada para não bloquear o bot
+    resultado = await asyncio.to_thread(buscar_processo, numero)
+    # Escapa caracteres de Markdown para evitar erros de formatação
+    resultado_escapado = escape_markdown(resultado, version=2)
+    await update.effective_message.reply_text(resultado_escapado, parse_mode='MarkdownV2')
 
 async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Adiciona um processo à lista de monitoramento do usuário."""
+    """Adiciona um ou mais processos à lista de monitoramento do usuário."""
     chat_id = str(update.effective_chat.id)
-    try:
-        numero = context.args[0].strip('<>')
-        if not numero.replace('/', '').isdigit() or not numero:
-            await update.effective_message.reply_text("Uso: /monitorar <numero_do_processo>\nO número do processo deve conter apenas dígitos e, opcionalmente, uma barra '/'.")
-            return
-    except (IndexError, ValueError):
-        await update.effective_message.reply_text("Uso: /monitorar <numero_do_processo>")
+    if not context.args:
+        await update.effective_message.reply_text("Uso: /monitorar <processo1>, <processo2>, ...")
         return
+
+    numeros_str = " ".join(context.args)
+    numeros_processo = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
+
+    if not numeros_processo:
+        await update.effective_message.reply_text("Por favor, forneça ao menos um número de processo válido.")
+        return
+        
+    await update.effective_message.reply_text(f"Processando {len(numeros_processo)} número(s)...")
 
     monitored = load_data(MONITORED_PROCESSES_FILE)
     if chat_id not in monitored:
         monitored[chat_id] = []
     
-    if numero not in monitored[chat_id]:
-        monitored[chat_id].append(numero)
+    adicionados = []
+    ja_monitorados = []
+    erros = []
+
+    states = load_data(PROCESS_STATES_FILE)
+
+    for numero in numeros_processo:
+        if not numero.replace('/', '').isdigit() or not numero:
+            erros.append(f"{numero} (inválido)")
+            continue
+
+        if numero not in monitored[chat_id]:
+            monitored[chat_id].append(numero)
+            adicionados.append(numero)
+            
+            # Busca o estado inicial para o novo processo
+            if numero not in states:
+                try:
+                    resultado = await asyncio.to_thread(buscar_processo, numero)
+                    current_hash = hashlib.md5(resultado.encode('utf-8')).hexdigest()
+                    states[numero] = current_hash
+                except Exception as e:
+                    logger.error(f"Falha ao buscar estado inicial para {numero}: {e}")
+                    erros.append(f"{numero} (falha ao buscar)")
+        else:
+            ja_monitorados.append(numero)
+    
+    if adicionados:
         save_data(monitored, MONITORED_PROCESSES_FILE)
-        await update.effective_message.reply_text(f"✅ Processo {numero} agora está sendo monitorado. Você será notificado sobre atualizações.")
-        # Adiciona ao estado inicial se não existir e envia o status atual
-        states = load_data(PROCESS_STATES_FILE)
-        resultado = buscar_processo(numero)
-        if numero not in states:
-            states[numero] = resultado # Armazena o texto completo como estado inicial
-            save_data(states, PROCESS_STATES_FILE)
-        
-        await update.effective_message.reply_text(f"*Situação atual do processo {numero}:*\n\n{resultado}", parse_mode='Markdown')
-    else:
-        await update.effective_message.reply_text(f"ℹ️ O processo {numero} já está na sua lista de monitoramento.")
+        save_data(states, PROCESS_STATES_FILE)
+
+    # Monta a mensagem de resumo
+    reply_parts = []
+    if adicionados:
+        reply_parts.append(f"✅ Processos monitorados: {', '.join(adicionados)}")
+    if ja_monitorados:
+        reply_parts.append(f"ℹ️ Já estavam monitorados: {', '.join(ja_monitorados)}")
+    if erros:
+        reply_parts.append(f"⚠️ Erros: {', '.join(erros)}")
+    
+    if reply_parts:
+        await update.effective_message.reply_text("\n".join(reply_parts))
 
 async def desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove um processo da lista de monitoramento."""
+    """Remove um ou mais processos da lista de monitoramento."""
     chat_id = str(update.effective_chat.id)
-    try:
-        numero = context.args[0].strip('<>')
-    except IndexError:
-        await update.effective_message.reply_text("Uso: /desmonitorar <numero_do_processo>")
+    if not context.args:
+        await update.effective_message.reply_text("Uso: /desmonitorar <processo1>, <processo2>, ...")
+        return
+
+    numeros_str = " ".join(context.args)
+    numeros_processo = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
+
+    if not numeros_processo:
+        await update.effective_message.reply_text("Por favor, forneça ao menos um número de processo.")
         return
 
     monitored = load_data(MONITORED_PROCESSES_FILE)
-    if chat_id in monitored and numero in monitored[chat_id]:
-        monitored[chat_id].remove(numero)
-        if not monitored[chat_id]: # Se a lista ficar vazia
+    removidos = []
+    nao_encontrados = []
+
+    if chat_id in monitored:
+        for numero in numeros_processo:
+            if numero in monitored[chat_id]:
+                monitored[chat_id].remove(numero)
+                removidos.append(numero)
+            else:
+                nao_encontrados.append(numero)
+        
+        if not monitored[chat_id]:
             del monitored[chat_id]
-        save_data(monitored, MONITORED_PROCESSES_FILE)
-        await update.effective_message.reply_text(f"❌ Processo {numero} removido da sua lista de monitoramento.")
+        
+        if removidos:
+            save_data(monitored, MONITORED_PROCESSES_FILE)
     else:
-        await update.effective_message.reply_text(f"ℹ️ O processo {numero} não está na sua lista de monitoramento.")
+        nao_encontrados.extend(numeros_processo)
+
+    # Monta a mensagem de resumo
+    reply_parts = []
+    if removidos:
+        reply_parts.append(f"❌ Processos removidos: {', '.join(removidos)}")
+    if nao_encontrados:
+        reply_parts.append(f"ℹ️ Não estavam na lista: {', '.join(nao_encontrados)}")
+
+    if reply_parts:
+        await update.effective_message.reply_text("\n".join(reply_parts))
+    else:
+        await update.effective_message.reply_text("Você não está monitorando nenhum processo.")
 
 async def listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lista os processos monitorados pelo usuário."""
@@ -130,6 +203,58 @@ async def listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.effective_message.reply_text("Você não está monitorando nenhum processo.")
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Verifica o status atual de um ou mais processos monitorados, sob demanda."""
+    chat_id = str(update.effective_chat.id)
+    if not context.args:
+        await update.effective_message.reply_text("Uso: /status <processo1>, <processo2>, ...")
+        return
+
+    numeros_str = " ".join(context.args)
+    numeros_processo = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
+
+    if not numeros_processo:
+        await update.effective_message.reply_text("Por favor, forneça ao menos um número de processo.")
+        return
+
+    await update.effective_message.reply_text(f"🔎 Verificando status de {len(numeros_processo)} processo(s), aguarde...")
+
+    monitored = load_data(MONITORED_PROCESSES_FILE)
+    states = load_data(PROCESS_STATES_FILE)
+
+    for numero in numeros_processo:
+        numero_escapado = escape_markdown(numero, version=2)
+        if not numero.replace('/', '').isdigit() or not numero:
+            await update.effective_message.reply_text(f"⚠️ O número de processo '{numero_escapado}' é inválido\\.", parse_mode='MarkdownV2')
+            continue
+
+        if chat_id not in monitored or numero not in monitored[chat_id]:
+            await update.effective_message.reply_text(f"❌ Você não está monitorando o processo {numero_escapado}\\. Use /monitorar para adicioná-lo\\.", parse_mode='MarkdownV2')
+            continue
+
+        try:
+            current_state_text = await asyncio.to_thread(buscar_processo, numero)
+            current_hash = hashlib.md5(current_state_text.encode('utf-8')).hexdigest()
+            
+            last_hash = states.get(numero)
+            
+            estado_escapado = escape_markdown(current_state_text, version=2)
+            
+            message_header = f"*Situação atual do processo {numero_escapado}:*\n\n"
+            message_body = f"{estado_escapado}"
+            
+            if last_hash == current_hash:
+                update_info = "\n\n*Status:* Sem novas atualizações desde a última verificação automática\\."
+            else:
+                update_info = "\n\n*Status:* 📢 *Houve uma atualização desde a última verificação automática\\!*"
+
+            full_message = message_header + message_body + update_info
+            await update.effective_message.reply_text(full_message, parse_mode='MarkdownV2')
+        except Exception as e:
+            logger.error(f"Erro ao verificar o status do processo {numero}: {e}", exc_info=True)
+            await update.effective_message.reply_text(f"⚠️ Ocorreu um erro ao verificar o processo {numero_escapado}\\. Tente novamente mais tarde\\.", parse_mode='MarkdownV2')
+
+
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     """Verifica periodicamente por atualizações nos processos monitorados."""
     logger.info("Executando verificação de atualizações...")
@@ -141,47 +266,42 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
         all_processes.update(processes)
 
     for numero in all_processes:
-        logger.info(f"Verificando processo: {numero}")
-        current_state = buscar_processo(numero)
-        last_state = states.get(numero)
-
-        subscribers = [chat_id for chat_id, procs in monitored.items() if numero in procs]
-        if not subscribers:
-            continue
-
-        # Caso 1: Houve uma atualização
-        if current_state and last_state != current_state and current_state.startswith("📄"):
-            logger.info(f"Atualização encontrada para o processo {numero}!")
-            states[numero] = current_state
-            save_data(states, PROCESS_STATES_FILE)
+        try:
+            logger.info(f"Verificando processo: {numero}")
             
-            message = f"📢 *Nova atualização no processo {numero}!*\n\n{current_state}"
-            for chat_id in subscribers:
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
-                except Exception as e:
-                    logger.error(f"Falha ao enviar mensagem de atualização para {chat_id}: {e}")
-        
-        # Caso 2: Sem atualizações
-        elif current_state and last_state == current_state:
-            logger.info(f"Processo {numero} sem atualizações.")
-            message = f"ℹ️ Processo {numero}: Sem novas atualizações."
-            for chat_id in subscribers:
-                try:
-                    # Envia uma notificação silenciosa para não incomodar o usuário
-                    await context.bot.send_message(chat_id=chat_id, text=message, disable_notification=True)
-                except Exception as e:
-                    logger.error(f"Falha ao enviar mensagem 'sem atualização' para {chat_id}: {e}")
+            # Roda a função síncrona em uma thread separada
+            current_state_text = await asyncio.to_thread(buscar_processo, numero)
+            
+            # Gera o hash do estado atual
+            current_hash = hashlib.md5(current_state_text.encode('utf-8')).hexdigest()
+            last_hash = states.get(numero)
 
-        # Caso 3: Erro ao buscar o processo
-        elif current_state and not current_state.startswith("📄"):
-             logger.warning(f"Falha ao buscar processo {numero}. Resposta: {current_state}")
-             message = f"⚠️ Não foi possível verificar o processo {numero}. O site pode estar offline ou o processo foi removido.\nErro: {current_state}"
-             for chat_id in subscribers:
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=message)
-                except Exception as e:
-                    logger.error(f"Falha ao enviar mensagem de erro para {chat_id}: {e}")
+            subscribers = [chat_id for chat_id, procs in monitored.items() if numero in procs]
+            if not subscribers:
+                continue
+
+            # Se o hash for diferente, houve uma atualização real.
+            if last_hash != current_hash:
+                logger.info(f"Atualização encontrada para o processo {numero}!")
+                states[numero] = current_hash
+                save_data(states, PROCESS_STATES_FILE)
+                
+                numero_escapado = escape_markdown(numero, version=2)
+                estado_escapado = escape_markdown(current_state_text, version=2)
+                message = f"📢 *Nova atualização no processo {numero_escapado}!*\n\n{estado_escapado}"
+                
+                for chat_id in subscribers:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2')
+                    except Exception as e:
+                        logger.error(f"Falha ao enviar mensagem de atualização para {chat_id} no processo {numero}: {e}")
+            else:
+                logger.info(f"Processo {numero} sem atualizações.")
+
+        except Exception as e:
+            logger.error(f"Falha CRÍTICA ao verificar o processo {numero}: {e}", exc_info=True)
+            # Continua para o próximo processo em caso de erro
+            continue
 
 
     logger.info("Verificação de atualizações concluída.")
@@ -204,6 +324,7 @@ def main():
     app.add_handler(CommandHandler("monitorar", monitorar))
     app.add_handler(CommandHandler("desmonitorar", desmonitorar))
     app.add_handler(CommandHandler("listar", listar))
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
 
     # Define o fuso horário de São Paulo
