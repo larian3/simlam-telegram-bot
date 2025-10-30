@@ -376,7 +376,7 @@ def main():
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
 
-    app = ApplicationBuilder().token(TOKEN).get_updates_args({'drop_pending_updates': True}).build()
+    app = ApplicationBuilder().token(TOKEN).build()
     job_queue = app.job_queue
 
     # Adiciona os handlers
@@ -393,7 +393,7 @@ def main():
 
 
     print("Bot rodando...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
