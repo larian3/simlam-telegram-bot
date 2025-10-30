@@ -347,6 +347,14 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
                             logger.error(f"Falha ao enviar mensagem de atualização para {chat_id} no processo {numero}: {e}")
                 else:
                     logger.info(f"Processo {numero} sem atualizações.")
+                    numero_escapado = escape_markdown(numero, version=2)
+                    message = f"ℹ️ O processo {numero_escapado} não teve novas atualizações desde a última verificação\\."
+                    for chat_id in process_subscribers[numero]:
+                        try:
+                            # Envia uma notificação silenciosa para não incomodar o usuário
+                            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2', disable_notification=True)
+                        except Exception as e:
+                            logger.error(f"Falha ao enviar mensagem 'sem atualização' para {chat_id} no processo {numero}: {e}")
 
             except Exception as e:
                 logger.error(f"Falha CRÍTICA ao verificar o processo {numero}: {e}", exc_info=True)
@@ -389,6 +397,7 @@ def main():
     # Agenda as verificações para horários específicos
     job_queue.run_daily(check_updates, time=time(hour=9, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
     job_queue.run_daily(check_updates, time=time(hour=12, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=14, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
     job_queue.run_daily(check_updates, time=time(hour=15, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
     job_queue.run_daily(check_updates, time=time(hour=18, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
 
