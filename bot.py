@@ -316,6 +316,12 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"Verificando processo: {numero}")
                 
                 resultado_data = await asyncio.to_thread(buscar_processo, numero)
+                
+                # Validação para garantir que o resultado é um dicionário
+                if not isinstance(resultado_data, dict):
+                    logger.error(f"Resultado inesperado para o processo {numero}: {resultado_data}")
+                    continue
+
                 current_timestamp = resultado_data.get('timestamp')
                 current_details = resultado_data.get('details')
 
@@ -338,7 +344,7 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
                     
                     numero_escapado = escape_markdown(numero, version=2)
                     estado_escapado = escape_markdown(current_details, version=2)
-                    message = f"📢 *Nova atualização no processo {numero_escapado}!*\n\n{estado_escapado}"
+                    message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
                     
                     for chat_id in process_subscribers[numero]:
                         try:
