@@ -105,19 +105,33 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Adiciona ao banco de dados
                 stmt = insert(monitored_processes).values(chat_id=chat_id, process_number=numero)
                 db.execute(stmt)
-                adicionados.append(numero)
                 
-                # Busca e armazena o estado inicial do processo, se não existir
-                state_query = select(process_states).where(process_states.c.process_number == numero)
-                if not db.execute(state_query).first():
-                    try:
-                        resultado_data = await asyncio.to_thread(buscar_processo, numero)
-                        if timestamp := resultado_data.get('timestamp'):
+                # Busca o estado atual para responder ao usuário e armazena se for novo
+                try:
+                    resultado_data = await asyncio.to_thread(buscar_processo, numero)
+                    
+                    # Armazena o timestamp inicial, se o processo ainda não estiver no DB de estados
+                    if timestamp := resultado_data.get('timestamp'):
+                        state_query = select(process_states).where(process_states.c.process_number == numero)
+                        if not db.execute(state_query).first():
                             state_stmt = insert(process_states).values(process_number=numero, last_timestamp=timestamp)
                             db.execute(state_stmt)
-                    except Exception as e:
-                        logger.error(f"Falha ao buscar estado inicial para {numero}: {e}")
-                        erros.append(f"{numero} (falha ao buscar)")
+                    
+                    # Envia a mensagem com o status atual
+                    numero_escapado = escape_markdown(numero, version=2)
+                    details = resultado_data.get('details', 'Não foi possível obter os detalhes do processo no momento.')
+                    details_escapado = escape_markdown(details, version=2)
+                    
+                    message = (
+                        f"✅ Processo {numero_escapado} agora está sendo monitorado\\.\n\n"
+                        f"*Situação atual:*\n{details_escapado}"
+                    )
+                    await update.effective_message.reply_text(message, parse_mode='MarkdownV2')
+                    adicionados.append(numero)
+
+                except Exception as e:
+                    logger.error(f"Falha ao buscar estado inicial para {numero}: {e}")
+                    erros.append(f"{numero} (falha ao buscar)")
             else:
                 ja_monitorados.append(numero)
         
@@ -131,10 +145,8 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
-    # Monta a mensagem de resumo
+    # Monta a mensagem de resumo para o que não foi reportado individualmente
     reply_parts = []
-    if adicionados:
-        reply_parts.append(f"✅ Processos monitorados: {', '.join(adicionados)}")
     if ja_monitorados:
         reply_parts.append(f"ℹ️ Já estavam monitorados: {', '.join(ja_monitorados)}")
     if erros:
