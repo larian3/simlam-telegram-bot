@@ -61,14 +61,21 @@ def save_data(data, filename):
             json.dump(data, f, indent=4, ensure_ascii=False)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        "Olá! 👋 Eu sou o bot do SIMLAM.\n"
-        "Envie o número do processo para consultar.\n\n"
-        "Use os comandos:\n"
-        "/monitorar <numero> - Para receber atualizações sobre um processo.\n"
-        "/desmonitorar <numero> - Para parar de receber atualizações.\n"
-        "/listar - Para ver seus processos monitorados."
+    start_message = (
+        "Olá\\! 👋 Eu sou o bot do SIMLAM\\.\n\n"
+        "Envie um número de processo para uma consulta rápida ou use os comandos abaixo:\n\n"
+        "*COMANDOS DISPONÍVEIS:*\n\n"
+        "🔹 `/monitorar <proc1>, <proc2>`\n"
+        "Para receber atualizações sobre um ou mais processos\\.\n\n"
+        "🔹 `/desmonitorar <proc1>, <proc2>`\n"
+        "Para parar de receber atualizações de um ou mais processos\\.\n\n"
+        "🔹 `/status <proc1>, <proc2>`\n"
+        "Verifica o status atual de processos já monitorados\\.\n\n"
+        "🔹 `/listar`\n"
+        "Mostra todos os seus processos monitorados\\.\n\n"
+        "_Dica: Para os comandos `/monitorar`, `/desmonitorar` e `/status`, você pode enviar vários números de uma vez, separados por vírgula\\._"
     )
+    await update.effective_message.reply_text(start_message, parse_mode='MarkdownV2')
 
 async def consultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     numero = update.effective_message.text.strip().strip('<>')
