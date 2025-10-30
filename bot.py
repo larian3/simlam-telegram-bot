@@ -398,6 +398,7 @@ def main():
     job_queue.run_daily(check_updates, time=time(hour=9, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
     job_queue.run_daily(check_updates, time=time(hour=12, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
     job_queue.run_daily(check_updates, time=time(hour=14, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=14, minute=30, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
     job_queue.run_daily(check_updates, time=time(hour=15, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
     job_queue.run_daily(check_updates, time=time(hour=18, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
 
