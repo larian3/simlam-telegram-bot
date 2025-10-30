@@ -4,3 +4,4 @@ beautifulsoup4
 PyMuPDF
 rich
 Flask
+pytz

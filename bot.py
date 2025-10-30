@@ -6,6 +6,8 @@ import os
 import json
 import threading
 from flask import Flask
+from datetime import time
+import pytz
 
 # Configuração de logging
 logging.basicConfig(
@@ -204,8 +206,15 @@ def main():
     app.add_handler(CommandHandler("listar", listar))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
 
-    # Agenda o job para rodar a cada 3 horas (10800 segundos)
-    job_queue.run_repeating(check_updates, interval=10800, first=10)
+    # Define o fuso horário de São Paulo
+    tz = pytz.timezone('America/Sao_Paulo')
+
+    # Agenda as verificações para horários específicos
+    job_queue.run_daily(check_updates, time=time(hour=9, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=12, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=15, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=18, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+
 
     print("Bot rodando...")
     app.run_polling()
