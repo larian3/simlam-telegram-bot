@@ -24,9 +24,9 @@ PROCESS_STATES_FILE = 'process_states.json'
 # This is a minimal web server to keep the bot alive on free hosting platforms.
 flask_app = Flask(__name__)
 
-@flask_app.route('/')
-def index():
-    return "Bot is running!"
+@flask_app.route('/health')
+def health_check():
+    return "OK", 200
 
 def run_flask():
     # Use a port assigned by the hosting platform, or 8080 as a default.
