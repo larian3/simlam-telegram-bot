@@ -5,6 +5,11 @@ from sqlalchemy.ext.declarative import declarative_base
 
 # Lê a URL do banco de dados da variável de ambiente
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Garante que a URL use o dialeto 'postgresql' que o SQLAlchemy espera.
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 if not DATABASE_URL:
     raise ValueError("A variável de ambiente DATABASE_URL não foi configurada.")
 
