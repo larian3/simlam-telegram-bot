@@ -376,7 +376,7 @@ def main():
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).get_updates_args({'drop_pending_updates': True}).build()
     job_queue = app.job_queue
 
     # Adiciona os handlers
