@@ -85,9 +85,9 @@ async def consultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.effective_message.reply_text(f"🔎 Buscando informações do processo {numero}, aguarde...")
     # Roda a função síncrona em uma thread separada para não bloquear o bot
-    resultado = await asyncio.to_thread(buscar_processo, numero)
+    resultado_data = await asyncio.to_thread(buscar_processo, numero)
     # Escapa caracteres de Markdown para evitar erros de formatação
-    resultado_escapado = escape_markdown(resultado, version=2)
+    resultado_escapado = escape_markdown(resultado_data.get('details', 'Não foi possível obter detalhes.'), version=2)
     await update.effective_message.reply_text(resultado_escapado, parse_mode='MarkdownV2')
 
 async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -104,7 +104,7 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Por favor, forneça ao menos um número de processo válido.")
         return
         
-    await update.effective_message.reply_text(f"Processando {len(numeros_processo)} número(s)...")
+    await update.effective_message.reply_text("Processando {} número(s)...".format(len(numeros_processo)))
 
     monitored = load_data(MONITORED_PROCESSES_FILE)
     if chat_id not in monitored:
@@ -128,9 +128,10 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Busca o estado inicial para o novo processo
             if numero not in states:
                 try:
-                    resultado = await asyncio.to_thread(buscar_processo, numero)
-                    current_hash = hashlib.md5(resultado.encode('utf-8')).hexdigest()
-                    states[numero] = current_hash
+                    resultado_data = await asyncio.to_thread(buscar_processo, numero)
+                    # Armazena o timestamp inicial, se existir
+                    if resultado_data.get('timestamp'):
+                        states[numero] = resultado_data['timestamp']
                 except Exception as e:
                     logger.error(f"Falha ao buscar estado inicial para {numero}: {e}")
                     erros.append(f"{numero} (falha ao buscar)")
@@ -239,26 +240,37 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(f"❌ Você não está monitorando o processo {numero_escapado}\\. Use /monitorar para adicioná-lo\\.", parse_mode='MarkdownV2')
             continue
 
+        await update.effective_message.reply_text(f"🔎 Verificando o status atual do processo {numero}, aguarde...")
+        
         try:
-            current_state_text = await asyncio.to_thread(buscar_processo, numero)
-            current_hash = hashlib.md5(current_state_text.encode('utf-8')).hexdigest()
+            resultado_data = await asyncio.to_thread(buscar_processo, numero)
+            current_details = resultado_data.get('details')
+            current_timestamp = resultado_data.get('timestamp')
             
-            last_hash = states.get(numero)
+            # Se não houver detalhes, mostra o erro retornado pelo scraper
+            if not current_details:
+                 await update.effective_message.reply_text(f"⚠️ Não foi possível obter detalhes para o processo {numero_escapado}\\. Motivo: Nenhum detalhe retornado\\.", parse_mode='MarkdownV2')
+                 return
+
+            last_timestamp = states.get(numero)
             
-            estado_escapado = escape_markdown(current_state_text, version=2)
+            estado_escapado = escape_markdown(current_details, version=2)
             
             message_header = f"*Situação atual do processo {numero_escapado}:*\n\n"
             message_body = f"{estado_escapado}"
             
-            if last_hash == current_hash:
+            # Compara timestamps para determinar se houve atualização
+            if last_timestamp == current_timestamp and current_timestamp is not None:
                 update_info = "\n\n*Status:* Sem novas atualizações desde a última verificação automática\\."
+            elif current_timestamp is None:
+                 update_info = "\n\n*Status:* Não foi possível determinar o status de atualização \\(sem data de tramitação\\)\\."
             else:
                 update_info = "\n\n*Status:* 📢 *Houve uma atualização desde a última verificação automática\\!*"
 
             full_message = message_header + message_body + update_info
             await update.effective_message.reply_text(full_message, parse_mode='MarkdownV2')
         except Exception as e:
-            logger.error(f"Erro ao verificar o status do processo {numero}: {e}", exc_info=True)
+            logger.error(f"Erro ao verificar o status do processo {numero} no comando /status: {e}", exc_info=True)
             await update.effective_message.reply_text(f"⚠️ Ocorreu um erro ao verificar o processo {numero_escapado}\\. Tente novamente mais tarde\\.", parse_mode='MarkdownV2')
 
 
@@ -276,25 +288,30 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
         try:
             logger.info(f"Verificando processo: {numero}")
             
-            # Roda a função síncrona em uma thread separada
-            current_state_text = await asyncio.to_thread(buscar_processo, numero)
+            # Roda a função síncrona que agora retorna um dict
+            resultado_data = await asyncio.to_thread(buscar_processo, numero)
+            current_timestamp = resultado_data.get('timestamp')
+            current_details = resultado_data.get('details')
+
+            # Pula se o scraper falhou em obter um timestamp (evita falsos positivos)
+            if not current_timestamp:
+                logger.warning(f"Não foi possível obter um timestamp para o processo {numero}. Detalhes: {current_details}")
+                continue
             
-            # Gera o hash do estado atual
-            current_hash = hashlib.md5(current_state_text.encode('utf-8')).hexdigest()
-            last_hash = states.get(numero)
+            last_timestamp = states.get(numero)
 
             subscribers = [chat_id for chat_id, procs in monitored.items() if numero in procs]
             if not subscribers:
                 continue
 
-            # Se o hash for diferente, houve uma atualização real.
-            if last_hash != current_hash:
+            # Se o timestamp for diferente, houve uma atualização real.
+            if last_timestamp != current_timestamp:
                 logger.info(f"Atualização encontrada para o processo {numero}!")
-                states[numero] = current_hash
+                states[numero] = current_timestamp
                 save_data(states, PROCESS_STATES_FILE)
                 
                 numero_escapado = escape_markdown(numero, version=2)
-                estado_escapado = escape_markdown(current_state_text, version=2)
+                estado_escapado = escape_markdown(current_details, version=2)
                 message = f"📢 *Nova atualização no processo {numero_escapado}!*\n\n{estado_escapado}"
                 
                 for chat_id in subscribers:

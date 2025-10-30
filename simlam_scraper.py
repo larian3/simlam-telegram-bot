@@ -246,24 +246,43 @@ def buscar_processo(search_term, search_type="processo"):
 
         final_data = extract_pdf_data(full_text)
         
+        # Validação Mínima: retorna None se dados essenciais não forem encontrados,
+        # evitando falsos positivos com resultados parciais (ex: apenas N/A).
+        if not final_data.get('interessado') and not final_data.get('tramitacoes'):
+             return {
+                'timestamp': None,
+                'details': f"Não foram encontrados detalhes suficientes para o processo '{search_term}'. O processo pode não existir ou os dados estão indisponíveis no momento."
+            }
+
         # Formata a saída para o bot
         output_lines = []
         output_lines.append(f"📄 *Resumo do Processo {final_data.get('numero_documento', search_term)}*")
         output_lines.append(f"Situação: {final_data.get('situacao_documento', 'N/A')}")
         output_lines.append(f"Interessado: {final_data.get('interessado', 'N/A')}")
         
+        timestamp = None
         if final_data.get("tramitacoes"):
             output_lines.append("\n*Última Tramitação:*")
             ultima_tramitacao = final_data["tramitacoes"][-1]
+            
+            # Extrai o timestamp da última tramitação
+            timestamp = ultima_tramitacao.get('data_hora_envio') or \
+                        ultima_tramitacao.get('data_hora_recebimento') or \
+                        ultima_tramitacao.get('data_hora_cancelamento') or \
+                        ultima_tramitacao.get('data_hora_arquivamento')
+
             for key, value in ultima_tramitacao.items():
                 output_lines.append(f"- {key.replace('_', ' ').title()}: {value}")
         
-        return "\n".join(output_lines)
+        return {
+            'timestamp': timestamp,
+            'details': "\n".join(output_lines)
+        }
 
     except requests.exceptions.RequestException as e:
-        return f"Erro de conexão: {e}"
+        return {'timestamp': None, 'details': f"Erro de conexão: {e}"}
     except Exception as e:
-        return f"Ocorreu um erro inesperado: {e}"
+        return {'timestamp': None, 'details': f"Ocorreu um erro inesperado ao processar '{search_term}': {e}"}
 
 
 def main():
@@ -287,12 +306,12 @@ def main():
     resultado = buscar_processo(search_term, search_type)
 
     # Para manter a saída rica no terminal, analisamos a string de resultado
-    if resultado.startswith("📄"):
+    if resultado.get('timestamp') or "Resumo do Processo" in resultado.get('details', ''):
         # Uma forma simples de re-exibir os dados de forma rica
         # Para uma implementação real, buscar_processo poderia retornar o dict
-        console.print(Panel.fit(resultado, title="[bold green]Resultado[/bold green]"))
+        console.print(Panel.fit(resultado['details'], title="[bold green]Resultado[/bold green]"))
     else:
-        console.print(Panel.fit(f"[bold red]❌ Erro[/bold red]\n{resultado}", title="Erro"))
+        console.print(Panel.fit(f"[bold red]❌ Erro[/bold red]\n{resultado.get('details', 'Erro desconhecido')}", title="Erro"))
 
 
 if __name__ == "__main__":
