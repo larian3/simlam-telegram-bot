@@ -118,7 +118,7 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             db.execute(state_stmt)
                     
                     # Envia a mensagem com o status atual
-                    numero_escapado = escape_markdown(numero, version=2)
+                    numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
                     details = resultado_data.get('details', 'Não foi possível obter os detalhes do processo no momento.')
                     details_escapado = escape_markdown(details, version=2)
                     
@@ -247,7 +247,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         process_states_map = {row.process_number: row.last_timestamp for row in db.execute(states_query)}
 
         for numero in numeros_processo:
-            numero_escapado = escape_markdown(numero, version=2)
+            numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
             if not numero.replace('/', '').isdigit() or not numero:
                 await update.effective_message.reply_text(f"⚠️ O número de processo '{numero_escapado}' é inválido\\.", parse_mode='MarkdownV2')
                 continue
@@ -349,7 +349,7 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
                     
                     db.commit() # Commit por processo para garantir que a notificação seja enviada apenas se o estado for salvo
                     
-                    numero_escapado = escape_markdown(numero, version=2)
+                    numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
                     estado_escapado = escape_markdown(current_details, version=2)
                     message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
                     
