@@ -338,7 +338,7 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
                     
                     numero_escapado = escape_markdown(numero, version=2)
                     estado_escapado = escape_markdown(current_details, version=2)
-                    message = f"📢 *Nova atualização no processo {numero_escapado}!*\n\n{estado_escapado}"
+                    message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
                     
                     for chat_id in process_subscribers[numero]:
                         try:
