@@ -289,84 +289,94 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     """Verifica periodicamente por atualizações nos processos monitorados."""
     logger.info("Executando verificação de atualizações...")
-    db = SessionLocal()
+    
+    # Etapa 1: Buscar a lista de processos a serem verificados em uma conexão curta
+    process_subscribers = {}
+    db = None
     try:
-        # Busca todos os processos e quem os monitora
+        db = SessionLocal()
         all_monitored_query = select(monitored_processes)
         all_monitored = db.execute(all_monitored_query).fetchall()
-        
-        # Agrupa por processo para notificar todos os assinantes
-        process_subscribers = {}
         for chat_id, process_number in all_monitored:
             if process_number not in process_subscribers:
                 process_subscribers[process_number] = []
             process_subscribers[process_number].append(chat_id)
-            
-        all_process_numbers = list(process_subscribers.keys())
-        if not all_process_numbers:
-            logger.info("Nenhum processo sendo monitorado. Verificação concluída.")
-            return
-
-        # Busca os estados atuais de todos os processos no DB
-        states_query = select(process_states).where(process_states.c.process_number.in_(all_process_numbers))
-        process_states_map = {row.process_number: row.last_timestamp for row in db.execute(states_query)}
-
-        for numero in all_process_numbers:
-            try:
-                logger.info(f"Verificando processo: {numero}")
-                
-                resultado_data = None
-                for attempt in range(1, 4): # Tenta 3 vezes
-                    resultado_data = await asyncio.to_thread(buscar_processo, numero)
-                    current_timestamp = resultado_data.get('timestamp')
-
-                    if current_timestamp:
-                        break # Sucesso, sai do loop de tentativas
-                    
-                    if attempt < 3:
-                        logger.warning(f"Tentativa {attempt}/3 falhou para o processo {numero} (sem timestamp). Detalhes: {resultado_data.get('details')}. Nova tentativa em 5 segundos...")
-                        await asyncio.sleep(5)
-                    else:
-                        logger.error(f"Falha ao obter timestamp para o processo {numero} após 3 tentativas. Último detalhe: {resultado_data.get('details')}")
-
-                current_timestamp = resultado_data.get('timestamp')
-                current_details = resultado_data.get('details')
-
-                if not current_timestamp:
-                    # Pula para o próximo processo se ainda não houver timestamp após as tentativas
-                    continue
-                
-                last_timestamp = process_states_map.get(numero)
-
-                if last_timestamp != current_timestamp:
-                    logger.info(f"Atualização encontrada para o processo {numero}!")
-                    
-                    # Atualiza ou insere o novo timestamp no banco
-                    update_stmt = update(process_states).where(process_states.c.process_number == numero).values(last_timestamp=current_timestamp)
-                    result = db.execute(update_stmt)
-                    if result.rowcount == 0:
-                        db.execute(insert(process_states).values(process_number=numero, last_timestamp=current_timestamp))
-                    
-                    db.commit() # Commit por processo para garantir que a notificação seja enviada apenas se o estado for salvo
-                    
-                    numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
-                    estado_escapado = escape_markdown(current_details, version=2)
-                    message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
-                    
-                    for chat_id in process_subscribers[numero]:
-                        try:
-                            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2')
-                        except Exception as e:
-                            logger.error(f"Falha ao enviar mensagem de atualização para {chat_id} no processo {numero}: {e}")
-                else:
-                    logger.info(f"Processo {numero} sem atualizações.")
-
-            except Exception as e:
-                logger.error(f"Falha CRÍTICA ao verificar o processo {numero}: {e}", exc_info=True)
-                db.rollback()
-                continue
     finally:
-        db.close()
+        if db:
+            db.close()
+
+    all_process_numbers = list(process_subscribers.keys())
+    if not all_process_numbers:
+        logger.info("Nenhum processo sendo monitorado. Verificação concluída.")
+        return
+
+    # Etapa 2: Iterar sobre cada processo, usando uma nova conexão para cada um
+    for numero in all_process_numbers:
+        db = None
+        try:
+            logger.info(f"Verificando processo: {numero}")
+            
+            # Abrir conexão para este processo específico
+            db = SessionLocal()
+            
+            # Buscar o estado anterior deste processo
+            state_query = select(process_states.c.last_timestamp).where(process_states.c.process_number == numero)
+            last_timestamp_result = db.execute(state_query).scalar_one_or_none()
+
+            # Lógica de busca com novas tentativas
+            resultado_data = None
+            for attempt in range(1, 4):  # Tenta 3 vezes
+                resultado_data = await asyncio.to_thread(buscar_processo, numero)
+                current_timestamp = resultado_data.get('timestamp')
+                if current_timestamp:
+                    break
+                if attempt < 3:
+                    logger.warning(f"Tentativa {attempt}/3 falhou para o processo {numero} (sem timestamp). Detalhes: {resultado_data.get('details')}. Nova tentativa em 5 segundos...")
+                    await asyncio.sleep(5)
+                else:
+                    logger.error(f"Falha ao obter timestamp para o processo {numero} após 3 tentativas. Último detalhe: {resultado_data.get('details')}")
+
+            current_timestamp = resultado_data.get('timestamp')
+            current_details = resultado_data.get('details')
+
+            if not current_timestamp:
+                continue  # Pula para o próximo processo se não houver timestamp
+
+            # Comparar e notificar se houver mudança
+            if last_timestamp_result != current_timestamp:
+                logger.info(f"Atualização encontrada para o processo {numero}!")
+
+                if last_timestamp_result is None:
+                    # Se não existia, insere
+                    db.execute(insert(process_states).values(process_number=numero, last_timestamp=current_timestamp))
+                else:
+                    # Se existia, atualiza
+                    update_stmt = update(process_states).where(process_states.c.process_number == numero).values(last_timestamp=current_timestamp)
+                    db.execute(update_stmt)
+                
+                db.commit()
+
+                # Prepara e envia a notificação
+                numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
+                estado_escapado = escape_markdown(current_details, version=2)
+                message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
+                
+                for chat_id in process_subscribers[numero]:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2')
+                    except Exception as e:
+                        logger.error(f"Falha ao enviar mensagem de atualização para {chat_id} no processo {numero}: {e}")
+            else:
+                logger.info(f"Processo {numero} sem atualizações.")
+
+        except Exception as e:
+            logger.error(f"Falha CRÍTICA ao verificar o processo {numero}: {e}", exc_info=True)
+            if db:
+                db.rollback() # Tenta reverter se o erro foi no DB
+        finally:
+            if db:
+                db.close() # Garante que a conexão seja sempre fechada
+
     logger.info("Verificação de atualizações concluída.")
 
 
