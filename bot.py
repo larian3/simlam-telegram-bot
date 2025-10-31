@@ -96,61 +96,52 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = select(monitored_processes.c.process_number).where(monitored_processes.c.chat_id == chat_id)
         user_monitored_set = {row[0] for row in db.execute(query)}
 
-        processos_para_adicionar = []
         for numero in numeros_processo:
             if not numero.replace('/', '').isdigit() or not numero:
                 erros.append(f"{numero} (inválido)")
                 continue
-            
-            if numero in user_monitored_set:
-                ja_monitorados.append(numero)
-            else:
-                processos_para_adicionar.append({'chat_id': chat_id, 'process_number': numero})
 
-        if processos_para_adicionar:
-            db.execute(insert(monitored_processes), processos_para_adicionar)
-            db.commit()
-            adicionados.extend([p['process_number'] for p in processos_para_adicionar])
-
-        # Agora, busca o status inicial dos processos que foram efetivamente adicionados
-        for numero in adicionados:
-            try:
-                resultado_data = await asyncio.to_thread(buscar_processo, numero)
-
-                # Validação para garantir que o resultado é um dicionário
-                if not isinstance(resultado_data, dict):
-                    logger.error(f"Resultado inesperado ao buscar estado inicial para {numero}: {resultado_data}")
-                    erros.append(f"{numero} (falha ao buscar)")
-                    continue
-
-                # Armazena o timestamp inicial, se o processo ainda não estiver no DB de estados
-                if timestamp := resultado_data.get('timestamp'):
-                    state_query = select(process_states).where(process_states.c.process_number == numero)
-                    if not db.execute(state_query).first():
-                        state_stmt = insert(process_states).values(process_number=numero, last_timestamp=timestamp)
-                        db.execute(state_stmt)
-                        db.commit() # Commit do estado individualmente
-
-                # Envia a mensagem com o status atual
-                numero_escapado = escape_markdown(numero, version=2)
-                details = resultado_data.get('details', 'Não foi possível obter os detalhes do processo no momento.')
-                details_escapado = escape_markdown(details, version=2)
+            if numero not in user_monitored_set:
+                # Adiciona ao banco de dados
+                stmt = insert(monitored_processes).values(chat_id=chat_id, process_number=numero)
+                db.execute(stmt)
                 
-                message = (
-                    f"✅ Processo {numero_escapado} agora está sendo monitorado\\.\n\n"
-                    f"*Situação atual:*\n{details_escapado}"
-                )
-                await update.effective_message.reply_text(message, parse_mode='MarkdownV2')
+                # Busca o estado atual para responder ao usuário e armazena se for novo
+                try:
+                    resultado_data = await asyncio.to_thread(buscar_processo, numero)
+                    
+                    # Armazena o timestamp inicial, se o processo ainda não estiver no DB de estados
+                    if timestamp := resultado_data.get('timestamp'):
+                        state_query = select(process_states).where(process_states.c.process_number == numero)
+                        if not db.execute(state_query).first():
+                            state_stmt = insert(process_states).values(process_number=numero, last_timestamp=timestamp)
+                            db.execute(state_stmt)
+                    
+                    # Envia a mensagem com o status atual
+                    numero_escapado = escape_markdown(numero, version=2)
+                    details = resultado_data.get('details', 'Não foi possível obter os detalhes do processo no momento.')
+                    details_escapado = escape_markdown(details, version=2)
+                    
+                    message = (
+                        f"✅ Processo {numero_escapado} agora está sendo monitorado\\.\n\n"
+                        f"*Situação atual:*\n{details_escapado}"
+                    )
+                    await update.effective_message.reply_text(message, parse_mode='MarkdownV2')
+                    adicionados.append(numero)
 
-            except Exception as e:
-                logger.error(f"Falha ao buscar estado inicial para {numero}: {e}")
-                erros.append(f"{numero} (falha ao buscar)")
-                db.rollback() # Garante que o estado não seja salvo se a busca falhar
+                except Exception as e:
+                    logger.error(f"Falha ao buscar estado inicial para {numero}: {e}")
+                    erros.append(f"{numero} (falha ao buscar)")
+            else:
+                ja_monitorados.append(numero)
         
+        db.commit()
+
     except Exception as e:
         logger.error(f"Erro de banco de dados em /monitorar: {e}", exc_info=True)
         db.rollback()
         await update.effective_message.reply_text("Ocorreu um erro ao processar sua solicitação. Tente novamente.")
+        return
     finally:
         db.close()
 
@@ -325,12 +316,6 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"Verificando processo: {numero}")
                 
                 resultado_data = await asyncio.to_thread(buscar_processo, numero)
-                
-                # Validação para garantir que o resultado é um dicionário
-                if not isinstance(resultado_data, dict):
-                    logger.error(f"Resultado inesperado para o processo {numero}: {resultado_data}")
-                    continue
-
                 current_timestamp = resultado_data.get('timestamp')
                 current_details = resultado_data.get('details')
 
@@ -353,13 +338,23 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
                     
                     numero_escapado = escape_markdown(numero, version=2)
                     estado_escapado = escape_markdown(current_details, version=2)
-                    message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
+                    message = f"📢 *Nova atualização no processo {numero_escapado}!*\n\n{estado_escapado}"
                     
                     for chat_id in process_subscribers[numero]:
                         try:
                             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2')
                         except Exception as e:
                             logger.error(f"Falha ao enviar mensagem de atualização para {chat_id} no processo {numero}: {e}")
+                else:
+                    logger.info(f"Processo {numero} sem atualizações.")
+                    numero_escapado = escape_markdown(numero, version=2)
+                    message = f"ℹ️ O processo {numero_escapado} não teve novas atualizações desde a última verificação\\."
+                    for chat_id in process_subscribers[numero]:
+                        try:
+                            # Envia uma notificação silenciosa para não incomodar o usuário
+                            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2', disable_notification=True)
+                        except Exception as e:
+                            logger.error(f"Falha ao enviar mensagem 'sem atualização' para {chat_id} no processo {numero}: {e}")
 
             except Exception as e:
                 logger.error(f"Falha CRÍTICA ao verificar o processo {numero}: {e}", exc_info=True)
@@ -396,13 +391,19 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
 
-    # Agenda a verificação para rodar a cada 15 minutos (900 segundos)
-    # A primeira execução ocorrerá 10 segundos após o bot iniciar
-    job_queue.run_repeating(check_updates, interval=900, first=10)
+    # Define o fuso horário de São Paulo
+    tz = pytz.timezone('America/Sao_Paulo')
+
+    # Agenda as verificações para horários específicos
+    job_queue.run_daily(check_updates, time=time(hour=9, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=12, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=14, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=15, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
+    job_queue.run_daily(check_updates, time=time(hour=18, minute=0, tzinfo=tz), job_kwargs={'misfire_grace_time': 3600})
 
 
     print("Bot rodando...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling()
 
 if __name__ == "__main__":
     main()

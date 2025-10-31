@@ -14,7 +14,7 @@ if not DATABASE_URL:
     raise ValueError("A variável de ambiente DATABASE_URL não foi configurada.")
 
 # Configuração do SQLAlchemy
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 metadata = MetaData()
