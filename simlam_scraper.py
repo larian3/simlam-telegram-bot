@@ -142,7 +142,7 @@ def print_summary_table(data):
 
 def buscar_processo(search_term, search_type="processo"):
     retries = 3
-    delay = 5  # segundos
+    delay = 5  # segundos, revertido para o valor original
     last_exception = None
 
     for attempt in range(retries):
@@ -287,14 +287,16 @@ def buscar_processo(search_term, search_type="processo"):
 
         except requests.exceptions.RequestException as e:
             last_exception = e
-            print(f"Tentativa {attempt + 1}/{retries} falhou com erro de conexão: {e}. Aguardando {delay}s...")
+            url_erro = e.request.url if e.request else "URL desconhecida"
+            print(f"Tentativa {attempt + 1}/{retries} falhou com erro de conexão em '{url_erro}': {e}. Aguardando {delay}s...")
             time.sleep(delay)
         except Exception as e:
             # Para outros erros (não de conexão), não tenta novamente
             return {'timestamp': None, 'details': f"Ocorreu um erro inesperado ao processar '{search_term}': {e}"}
     
     # Se o loop terminar sem sucesso, retorna o último erro de conexão
-    return {'timestamp': None, 'details': f"Erro de conexão após {retries} tentativas: {last_exception}"}
+    url_final_erro = last_exception.request.url if last_exception and last_exception.request else "URL desconhecida"
+    return {'timestamp': None, 'details': f"Erro de conexão em '{url_final_erro}' após {retries} tentativas: {last_exception}"}
 
 
 def main():
