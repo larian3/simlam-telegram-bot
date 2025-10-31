@@ -141,148 +141,160 @@ def print_summary_table(data):
 
 
 def buscar_processo(search_term, search_type="processo"):
-    base_url = "https://monitoramento.semas.pa.gov.br/simlam/"
-    if search_type == "documento":
-        search_page = "ListarDocumentos.aspx"
-        view_js_function = "abrirDocumento"
-        view_page = "VisualizarDocumento.aspx"
-    else: # processo
-        search_page = "ListarProcessos.aspx"
-        view_js_function = "abrirProcesso"
-        view_page = "VisualizarProcesso.aspx"
+    retries = 3
+    delay = 5  # segundos
+    last_exception = None
 
-    search_page_url = urljoin(base_url, search_page)
-
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    })
-
-    try:
-        response = session.get(search_page_url)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-
+    for attempt in range(retries):
         try:
-            viewstate = soup.find('input', {'name': '__VIEWSTATE'}).get('value')
-            viewstategenerator = soup.find('input', {'name': '__VIEWSTATEGENERATOR'}).get('value')
-            eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
-        except AttributeError:
-            return "Erro: Não foi possível extrair os dados de estado da página de busca."
+            base_url = "https://monitoramento.semas.pa.gov.br/simlam/"
+            if search_type == "documento":
+                search_page = "ListarDocumentos.aspx"
+                view_js_function = "abrirDocumento"
+                view_page = "VisualizarDocumento.aspx"
+            else: # processo
+                search_page = "ListarProcessos.aspx"
+                view_js_function = "abrirProcesso"
+                view_page = "VisualizarProcesso.aspx"
 
-        form_data = {
-            'ctl00$scriptManagerMstPage': 'ctl00$baseBody$upBuscaSimples|ctl00$baseBody$btnPesquisa',
-            '__EVENTTARGET': 'ctl00$baseBody$btnPesquisa',
-            '__EVENTARGUMENT': '',
-            '__VIEWSTATE': viewstate,
-            '__VIEWSTATEGENERATOR': viewstategenerator,
-            '__EVENTVALIDATION': eventvalidation,
-            'ctl00$baseBody$txtBusca': search_term,
-            '__ASYNCPOST': 'true',
-        }
-        response = session.post(search_page_url, data=form_data)
-        response.raise_for_status()
+            search_page_url = urljoin(base_url, search_page)
 
-        ajax_panels = parse_ajax_response(response.text)
-        results_html = ajax_panels.get('ctl00_baseBody_upGrid')
-        if not results_html:
-            return f"Nenhum resultado encontrado para {search_type} '{search_term}'."
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            })
 
-        soup = BeautifulSoup(results_html, 'html.parser')
-        visualizar_tag = soup.find('a', title='Visualizar')
-        if not (visualizar_tag and visualizar_tag.has_attr('onclick')):
-            return f"Nenhum resultado encontrado para {search_type} '{search_term}'."
+            response = session.get(search_page_url)
+            response.raise_for_status()
 
-        match = re.search(fr'{view_js_function}\((\d+)\)', visualizar_tag['onclick'])
-        if not match:
-            return "Erro: Não foi possível extrair o ID do resultado."
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-        entity_id = match.group(1)
-        details_url = urljoin(search_page_url, f"{view_page}?id={entity_id}")
+            try:
+                viewstate = soup.find('input', {'name': '__VIEWSTATE'}).get('value')
+                viewstategenerator = soup.find('input', {'name': '__VIEWSTATEGENERATOR'}).get('value')
+                eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
+            except AttributeError:
+                return "Erro: Não foi possível extrair os dados de estado da página de busca."
 
-        response = session.get(details_url)
-        response.raise_for_status()
+            form_data = {
+                'ctl00$scriptManagerMstPage': 'ctl00$baseBody$upBuscaSimples|ctl00$baseBody$btnPesquisa',
+                '__EVENTTARGET': 'ctl00$baseBody$btnPesquisa',
+                '__EVENTARGUMENT': '',
+                '__VIEWSTATE': viewstate,
+                '__VIEWSTATEGENERATOR': viewstategenerator,
+                '__EVENTVALIDATION': eventvalidation,
+                'ctl00$baseBody$txtBusca': search_term,
+                '__ASYNCPOST': 'true',
+            }
+            response = session.post(search_page_url, data=form_data)
+            response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, 'html.parser')
-        try:
-            viewstate = soup.find('input', {'name': '__VIEWSTATE'}).get('value')
-            viewstategenerator = soup.find('input', {'name': '__VIEWSTATEGENERATOR'}).get('value')
-            eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
-        except AttributeError:
-            # Not a fatal error, might still work
-            pass
+            ajax_panels = parse_ajax_response(response.text)
+            results_html = ajax_panels.get('ctl00_baseBody_upGrid')
+            if not results_html:
+                return f"Nenhum resultado encontrado para {search_type} '{search_term}'."
 
-        pdf_form_data = {
-            '__EVENTTARGET': 'ctl00$baseBody$btnGerar',
-            '__EVENTARGUMENT': '',
-            '__VIEWSTATE': viewstate,
-            '__VIEWSTATEGENERATOR': viewstategenerator,
-            '__EVENTVALIDATION': eventvalidation,
-        }
-        pdf_page_response = session.post(details_url, data=pdf_form_data)
-        pdf_page_response.raise_for_status()
+            soup = BeautifulSoup(results_html, 'html.parser')
+            visualizar_tag = soup.find('a', title='Visualizar')
+            if not (visualizar_tag and visualizar_tag.has_attr('onclick')):
+                return f"Nenhum resultado encontrado para {search_type} '{search_term}'."
 
-        pdf_url = None
-        match_pdf = re.search(r"window\.open\('([^']+)'", pdf_page_response.text)
-        if match_pdf:
-            pdf_url = urljoin(details_url, match_pdf.group(1))
-        else:
-            process_soup = BeautifulSoup(pdf_page_response.text, 'html.parser')
-            pdf_link_tag = process_soup.find('a', title=re.compile(r'\.pdf$', re.IGNORECASE))
-            if pdf_link_tag and pdf_link_tag.has_attr('href'):
-                pdf_url = urljoin(details_url, pdf_link_tag['href'])
+            match = re.search(fr'{view_js_function}\((\d+)\)', visualizar_tag['onclick'])
+            if not match:
+                return "Erro: Não foi possível extrair o ID do resultado."
 
-        if not pdf_url:
-            return "Erro: Não foi possível localizar o link do PDF."
+            entity_id = match.group(1)
+            details_url = urljoin(search_page_url, f"{view_page}?id={entity_id}")
 
-        pdf_response = session.get(pdf_url)
-        pdf_response.raise_for_status()
-        pdf_content = pdf_response.content
+            response = session.get(details_url)
+            response.raise_for_status()
 
-        doc = fitz.open(stream=pdf_content, filetype="pdf")
-        full_text = "".join(page.get_text() for page in doc)
-        doc.close()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            try:
+                viewstate = soup.find('input', {'name': '__VIEWSTATE'}).get('value')
+                viewstategenerator = soup.find('input', {'name': '__VIEWSTATEGENERATOR'}).get('value')
+                eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
+            except AttributeError:
+                # Not a fatal error, might still work
+                pass
 
-        final_data = extract_pdf_data(full_text)
-        
-        # Validação Mínima: retorna None se dados essenciais não forem encontrados,
-        # evitando falsos positivos com resultados parciais (ex: apenas N/A).
-        if not final_data.get('interessado') and not final_data.get('tramitacoes'):
-             return {
-                'timestamp': None,
-                'details': f"Não foram encontrados detalhes suficientes para o processo '{search_term}'. O processo pode não existir ou os dados estão indisponíveis no momento."
+            pdf_form_data = {
+                '__EVENTTARGET': 'ctl00$baseBody$btnGerar',
+                '__EVENTARGUMENT': '',
+                '__VIEWSTATE': viewstate,
+                '__VIEWSTATEGENERATOR': viewstategenerator,
+                '__EVENTVALIDATION': eventvalidation,
+            }
+            pdf_page_response = session.post(details_url, data=pdf_form_data)
+            pdf_page_response.raise_for_status()
+
+            pdf_url = None
+            match_pdf = re.search(r"window\.open\('([^']+)'", pdf_page_response.text)
+            if match_pdf:
+                pdf_url = urljoin(details_url, match_pdf.group(1))
+            else:
+                process_soup = BeautifulSoup(pdf_page_response.text, 'html.parser')
+                pdf_link_tag = process_soup.find('a', title=re.compile(r'\.pdf$', re.IGNORECASE))
+                if pdf_link_tag and pdf_link_tag.has_attr('href'):
+                    pdf_url = urljoin(details_url, pdf_link_tag['href'])
+
+            if not pdf_url:
+                return "Erro: Não foi possível localizar o link do PDF."
+
+            pdf_response = session.get(pdf_url)
+            pdf_response.raise_for_status()
+            pdf_content = pdf_response.content
+
+            doc = fitz.open(stream=pdf_content, filetype="pdf")
+            full_text = "".join(page.get_text() for page in doc)
+            doc.close()
+
+            final_data = extract_pdf_data(full_text)
+            
+            # Validação Mínima: retorna None se dados essenciais não forem encontrados,
+            # evitando falsos positivos com resultados parciais (ex: apenas N/A).
+            if not final_data.get('interessado') and not final_data.get('tramitacoes'):
+                 return {
+                    'timestamp': None,
+                    'details': f"Não foram encontrados detalhes suficientes para o processo '{search_term}'. O processo pode não existir ou os dados estão indisponíveis no momento."
+                }
+
+            # Formata a saída para o bot
+            output_lines = []
+            output_lines.append(f"📄 *Resumo do Processo {final_data.get('numero_documento', search_term)}*")
+            output_lines.append(f"Situação: {final_data.get('situacao_documento', 'N/A')}")
+            output_lines.append(f"Interessado: {final_data.get('interessado', 'N/A')}")
+            
+            timestamp = None
+            if final_data.get("tramitacoes"):
+                output_lines.append("\n*Última Tramitação:*")
+                ultima_tramitacao = final_data["tramitacoes"][-1]
+                
+                # Extrai o timestamp da última tramitação
+                timestamp = ultima_tramitacao.get('data_hora_envio') or \
+                            ultima_tramitacao.get('data_hora_recebimento') or \
+                            ultima_tramitacao.get('data_hora_cancelamento') or \
+                            ultima_tramitacao.get('data_hora_arquivamento')
+
+                for key, value in ultima_tramitacao.items():
+                    output_lines.append(f"- {key.replace('_', ' ').title()}: {value}")
+            
+            # Se chegou aqui, a requisição foi bem-sucedida, então retorna o resultado
+            return {
+                'timestamp': timestamp,
+                'details': "\n".join(output_lines)
             }
 
-        # Formata a saída para o bot
-        output_lines = []
-        output_lines.append(f"📄 *Resumo do Processo {final_data.get('numero_documento', search_term)}*")
-        output_lines.append(f"Situação: {final_data.get('situacao_documento', 'N/A')}")
-        output_lines.append(f"Interessado: {final_data.get('interessado', 'N/A')}")
-        
-        timestamp = None
-        if final_data.get("tramitacoes"):
-            output_lines.append("\n*Última Tramitação:*")
-            ultima_tramitacao = final_data["tramitacoes"][-1]
-            
-            # Extrai o timestamp da última tramitação
-            timestamp = ultima_tramitacao.get('data_hora_envio') or \
-                        ultima_tramitacao.get('data_hora_recebimento') or \
-                        ultima_tramitacao.get('data_hora_cancelamento') or \
-                        ultima_tramitacao.get('data_hora_arquivamento')
-
-            for key, value in ultima_tramitacao.items():
-                output_lines.append(f"- {key.replace('_', ' ').title()}: {value}")
-        
-        return {
-            'timestamp': timestamp,
-            'details': "\n".join(output_lines)
-        }
-
-    except requests.exceptions.RequestException as e:
-        return {'timestamp': None, 'details': f"Erro de conexão: {e}"}
-    except Exception as e:
-        return {'timestamp': None, 'details': f"Ocorreu um erro inesperado ao processar '{search_term}': {e}"}
+        except requests.exceptions.RequestException as e:
+            last_exception = e
+            print(f"Tentativa {attempt + 1}/{retries} falhou com erro de conexão: {e}. Aguardando {delay}s...")
+            time.sleep(delay)
+        except Exception as e:
+            # Para outros erros (não de conexão), não tenta novamente
+            return {'timestamp': None, 'details': f"Ocorreu um erro inesperado ao processar '{search_term}': {e}"}
+    
+    # Se o loop terminar sem sucesso, retorna o último erro de conexão
+    return {'timestamp': None, 'details': f"Erro de conexão após {retries} tentativas: {last_exception}"}
 
 
 def main():
