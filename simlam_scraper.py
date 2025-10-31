@@ -211,14 +211,16 @@ def buscar_processo(search_term, search_type="processo"):
             eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
         except AttributeError:
             # Not a fatal error, might still work
-            pass
-
+            viewstate, viewstategenerator, eventvalidation = '', '', ''
+        
         pdf_form_data = {
+            'ctl00$scriptManagerMstPage': 'ctl00$baseBody$updPanelMaster|ctl00$baseBody$btnGerar',
             '__EVENTTARGET': 'ctl00$baseBody$btnGerar',
             '__EVENTARGUMENT': '',
             '__VIEWSTATE': viewstate,
             '__VIEWSTATEGENERATOR': viewstategenerator,
             '__EVENTVALIDATION': eventvalidation,
+            '__ASYNCPOST': 'true',
         }
         pdf_page_response = session.post(details_url, data=pdf_form_data)
         pdf_page_response.raise_for_status()
