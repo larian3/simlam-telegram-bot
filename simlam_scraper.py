@@ -169,7 +169,7 @@ def buscar_processo(search_term, search_type="processo"):
             viewstategenerator = soup.find('input', {'name': '__VIEWSTATEGENERATOR'}).get('value')
             eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
         except AttributeError:
-            return "Erro: Não foi possível extrair os dados de estado da página de busca."
+            return {'timestamp': None, 'details': "Erro: Não foi possível extrair os dados de estado da página de busca."}
 
         form_data = {
             'ctl00$scriptManagerMstPage': 'ctl00$baseBody$upBuscaSimples|ctl00$baseBody$btnPesquisa',
@@ -187,16 +187,16 @@ def buscar_processo(search_term, search_type="processo"):
         ajax_panels = parse_ajax_response(response.text)
         results_html = ajax_panels.get('ctl00_baseBody_upGrid')
         if not results_html:
-            return f"Nenhum resultado encontrado para {search_type} '{search_term}'."
+            return {'timestamp': None, 'details': f"Nenhum resultado encontrado para {search_type} '{search_term}'."}
 
         soup = BeautifulSoup(results_html, 'html.parser')
         visualizar_tag = soup.find('a', title='Visualizar')
         if not (visualizar_tag and visualizar_tag.has_attr('onclick')):
-            return f"Nenhum resultado encontrado para {search_type} '{search_term}'."
+            return {'timestamp': None, 'details': f"Nenhum resultado encontrado para {search_type} '{search_term}'."}
 
         match = re.search(fr'{view_js_function}\((\d+)\)', visualizar_tag['onclick'])
         if not match:
-            return "Erro: Não foi possível extrair o ID do resultado."
+            return {'timestamp': None, 'details': "Erro: Não foi possível extrair o ID do resultado."}
 
         entity_id = match.group(1)
         details_url = urljoin(search_page_url, f"{view_page}?id={entity_id}")
@@ -236,7 +236,7 @@ def buscar_processo(search_term, search_type="processo"):
                 pdf_url = urljoin(details_url, pdf_link_tag['href'])
 
         if not pdf_url:
-            return "Erro: Não foi possível localizar o link do PDF."
+            return {'timestamp': None, 'details': "Erro: Não foi possível localizar o link do PDF."}
 
         pdf_response = session.get(pdf_url)
         pdf_response.raise_for_status()

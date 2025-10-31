@@ -315,12 +315,25 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
             try:
                 logger.info(f"Verificando processo: {numero}")
                 
-                resultado_data = await asyncio.to_thread(buscar_processo, numero)
+                resultado_data = None
+                for attempt in range(1, 4): # Tenta 3 vezes
+                    resultado_data = await asyncio.to_thread(buscar_processo, numero)
+                    current_timestamp = resultado_data.get('timestamp')
+
+                    if current_timestamp:
+                        break # Sucesso, sai do loop de tentativas
+                    
+                    if attempt < 3:
+                        logger.warning(f"Tentativa {attempt}/3 falhou para o processo {numero} (sem timestamp). Detalhes: {resultado_data.get('details')}. Nova tentativa em 5 segundos...")
+                        await asyncio.sleep(5)
+                    else:
+                        logger.error(f"Falha ao obter timestamp para o processo {numero} após 3 tentativas. Último detalhe: {resultado_data.get('details')}")
+
                 current_timestamp = resultado_data.get('timestamp')
                 current_details = resultado_data.get('details')
 
                 if not current_timestamp:
-                    logger.warning(f"Não foi possível obter um timestamp para o processo {numero}. Detalhes: {current_details}")
+                    # Pula para o próximo processo se ainda não houver timestamp após as tentativas
                     continue
                 
                 last_timestamp = process_states_map.get(numero)
