@@ -8,11 +8,11 @@ import asyncio
 from flask import Flask
 from datetime import time
 import pytz
-from sqlalchemy import select, insert, delete, update
+from sqlalchemy import select, insert, delete, update, func
 import threading
 
 # Importa as configurações do banco de dados
-from database import SessionLocal, monitored_processes, process_states, init_db
+from database import SessionLocal, monitored_processes, process_states, group_subscriptions, init_db
 
 
 # Configuração de logging
@@ -71,7 +71,7 @@ async def consultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(resultado_escapado, parse_mode='MarkdownV2')
 
 async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Adiciona um ou mais processos à lista de monitoramento do usuário."""
+    """Adiciona um ou mais processos à lista de monitoramento do chat."""
     chat_id = str(update.effective_chat.id)
     if not context.args:
         await update.effective_message.reply_text("Uso: /monitorar <processo1>, <processo2>, ...")
@@ -86,14 +86,10 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.effective_message.reply_text("Processando {} número(s)...".format(len(numeros_processo)))
 
-    adicionados = []
-    ja_monitorados = []
-    erros = []
-
     db = SessionLocal()
     try:
-        # Busca todos os processos que este usuário já monitora
-        query = select(monitored_processes.c.process_number).where(monitored_processes.c.chat_id == chat_id)
+        # Busca processos que este chat já monitora
+        query = select(group_subscriptions.c.process_number).where(group_subscriptions.c.chat_id == chat_id)
         user_monitored_set = {row[0] for row in db.execute(query)}
 
         for numero in numeros_processo:
@@ -102,9 +98,13 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             if numero not in user_monitored_set:
-                # Adiciona ao banco de dados
-                stmt = insert(monitored_processes).values(chat_id=chat_id, process_number=numero)
-                db.execute(stmt)
+                # 1. Adiciona à lista de monitoramento global (ignora se já existe)
+                stmt_global = insert(monitored_processes).values(process_number=numero).on_conflict_do_nothing()
+                db.execute(stmt_global)
+
+                # 2. Cria a inscrição para este chat
+                stmt_sub = insert(group_subscriptions).values(chat_id=chat_id, process_number=numero)
+                db.execute(stmt_sub)
                 
                 # Busca o estado atual para responder ao usuário e armazena se for novo
                 try:
@@ -156,7 +156,7 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("\n".join(reply_parts))
 
 async def desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove um ou mais processos da lista de monitoramento."""
+    """Remove um ou mais processos da lista de monitoramento do chat."""
     chat_id = str(update.effective_chat.id)
     if not context.args:
         await update.effective_message.reply_text("Uso: /desmonitorar <processo1>, <processo2>, ...")
@@ -171,12 +171,23 @@ async def desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     db = SessionLocal()
     try:
-        # Deleta as entradas correspondentes
-        stmt = delete(monitored_processes).where(
-            monitored_processes.c.chat_id == chat_id,
-            monitored_processes.c.process_number.in_(numeros_processo)
+        # 1. Remove as inscrições deste chat
+        stmt_delete_sub = delete(group_subscriptions).where(
+            group_subscriptions.c.chat_id == chat_id,
+            group_subscriptions.c.process_number.in_(numeros_processo)
         )
-        result = db.execute(stmt)
+        result = db.execute(stmt_delete_sub)
+        
+        # 2. Verifica quais processos ficaram "órfãos" (sem ninguém monitorando)
+        for numero in numeros_processo:
+            query_refs = select(func.count()).select_from(group_subscriptions).where(group_subscriptions.c.process_number == numero)
+            count = db.execute(query_refs).scalar()
+            
+            if count == 0:
+                # Se ninguém mais monitora, remove da lista global
+                stmt_delete_global = delete(monitored_processes).where(monitored_processes.c.process_number == numero)
+                db.execute(stmt_delete_global)
+        
         db.commit()
         
         removidos_count = result.rowcount
@@ -202,11 +213,11 @@ async def desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lista os processos monitorados pelo usuário."""
+    """Lista os processos monitorados pelo chat."""
     chat_id = str(update.effective_chat.id)
     db = SessionLocal()
     try:
-        query = select(monitored_processes.c.process_number).where(monitored_processes.c.chat_id == chat_id).order_by(monitored_processes.c.process_number)
+        query = select(group_subscriptions.c.process_number).where(group_subscriptions.c.chat_id == chat_id).order_by(group_subscriptions.c.process_number)
         user_processes = [row[0] for row in db.execute(query)]
         
         if user_processes:
@@ -237,7 +248,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Busca os processos que o usuário monitora para validação
         monitored_query = select(monitored_processes.c.process_number).where(
-            monitored_processes.c.chat_id == chat_id,
             monitored_processes.c.process_number.in_(numeros_processo)
         )
         user_monitored_set = {row[0] for row in db.execute(monitored_query)}
@@ -286,7 +296,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
-async def check_single_process(numero: str, subscribers: list, context: ContextTypes.DEFAULT_TYPE):
+async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
     """Lógica para verificar um único processo e notificar os assinantes."""
     db = None
     try:
@@ -327,6 +337,10 @@ async def check_single_process(numero: str, subscribers: list, context: ContextT
             
             db.commit()
 
+            # Busca todos os chats inscritos neste processo
+            subscribers_query = select(group_subscriptions.c.chat_id).where(group_subscriptions.c.process_number == numero)
+            subscribers = [row[0] for row in db.execute(subscribers_query)]
+
             numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
             estado_escapado = escape_markdown(current_details, version=2)
             message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
@@ -351,26 +365,23 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     """Verifica periodicamente por atualizações nos processos monitorados."""
     logger.info("Executando verificação de atualizações...")
     
-    process_subscribers = {}
+    processes_to_check = []
     db = None
     try:
         db = SessionLocal()
-        all_monitored_query = select(monitored_processes)
-        all_monitored = db.execute(all_monitored_query).fetchall()
-        for chat_id, process_number in all_monitored:
-            if process_number not in process_subscribers:
-                process_subscribers[process_number] = []
-            process_subscribers[process_number].append(chat_id)
+        # Busca da lista global de processos
+        all_monitored_query = select(monitored_processes.c.process_number)
+        processes_to_check = [row[0] for row in db.execute(all_monitored_query)]
     finally:
         if db:
             db.close()
 
-    if not process_subscribers:
-        logger.info("Nenhum processo sendo monitorado. Verificação concluída.")
+    if not processes_to_check:
+        logger.info("Nenhum processo sendo monitorado globalmente. Verificação concluída.")
         return
 
     # Cria uma tarefa para cada processo para rodar em paralelo
-    tasks = [check_single_process(numero, subscribers, context) for numero, subscribers in process_subscribers.items()]
+    tasks = [check_single_process(numero, context) for numero in processes_to_check]
     await asyncio.gather(*tasks)
 
     logger.info("Verificação de atualizações concluída.")

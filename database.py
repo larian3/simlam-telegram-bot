@@ -19,10 +19,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 metadata = MetaData()
 
-# Define a tabela para processos monitorados
-# Cada linha representa um usuário monitorando um processo
+# Define a tabela para processos monitorados (agora uma lista global única)
+# Cada processo é verificado apenas uma vez, independentemente de quantos grupos o seguem.
 monitored_processes = Table(
     'monitored_processes', metadata,
+    Column('process_number', String, primary_key=True)
+)
+
+# Nova tabela para ligar os grupos aos processos que eles desejam monitorar
+group_subscriptions = Table(
+    'group_subscriptions', metadata,
     Column('chat_id', String, primary_key=True),
     Column('process_number', String, primary_key=True)
 )
@@ -40,10 +46,12 @@ def init_db():
     Cria as tabelas no banco de dados se elas ainda não existirem.
     """
     inspector = inspect(engine)
-    if not inspector.has_table('monitored_processes') or not inspector.has_table('process_states'):
-        print("Criando tabelas no banco de dados...")
+    if not inspector.has_table('monitored_processes') or \
+       not inspector.has_table('process_states') or \
+       not inspector.has_table('group_subscriptions'):
+        print("Criando ou atualizando tabelas no banco de dados...")
         metadata.create_all(bind=engine)
-        print("Tabelas criadas com sucesso.")
+        print("Tabelas criadas/atualizadas com sucesso.")
     else:
         print("Tabelas já existem no banco de dados.")
 
