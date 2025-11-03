@@ -98,9 +98,12 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             if numero not in user_monitored_set:
-                # 1. Adiciona à lista de monitoramento global (ignora se já existe)
-                stmt_global = insert(monitored_processes).values(process_number=numero).on_conflict_do_nothing()
-                db.execute(stmt_global)
+                # 1. Adiciona à lista de monitoramento global apenas se não existir
+                query_exists = select(monitored_processes).where(monitored_processes.c.process_number == numero)
+                exists = db.execute(query_exists).first()
+                if not exists:
+                    stmt_global = insert(monitored_processes).values(process_number=numero)
+                    db.execute(stmt_global)
 
                 # 2. Cria a inscrição para este chat
                 stmt_sub = insert(group_subscriptions).values(chat_id=chat_id, process_number=numero)
