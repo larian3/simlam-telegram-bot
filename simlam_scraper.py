@@ -158,8 +158,11 @@ def buscar_processo(search_term, search_type="processo"):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     })
 
+    # Define um timeout padrão para todas as requisições da sessão
+    timeout = 240  
+
     try:
-        response = session.get(search_page_url)
+        response = session.get(search_page_url, timeout=timeout)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -181,7 +184,7 @@ def buscar_processo(search_term, search_type="processo"):
             'ctl00$baseBody$txtBusca': search_term,
             '__ASYNCPOST': 'true',
         }
-        response = session.post(search_page_url, data=form_data)
+        response = session.post(search_page_url, data=form_data, timeout=timeout)
         response.raise_for_status()
 
         ajax_panels = parse_ajax_response(response.text)
@@ -201,7 +204,7 @@ def buscar_processo(search_term, search_type="processo"):
         entity_id = match.group(1)
         details_url = urljoin(search_page_url, f"{view_page}?id={entity_id}")
 
-        response = session.get(details_url)
+        response = session.get(details_url, timeout=timeout)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -222,7 +225,7 @@ def buscar_processo(search_term, search_type="processo"):
             '__EVENTVALIDATION': eventvalidation,
             '__ASYNCPOST': 'true',
         }
-        pdf_page_response = session.post(details_url, data=pdf_form_data)
+        pdf_page_response = session.post(details_url, data=pdf_form_data, timeout=timeout)
         pdf_page_response.raise_for_status()
 
         pdf_url = None
@@ -238,7 +241,7 @@ def buscar_processo(search_term, search_type="processo"):
         if not pdf_url:
             return {'timestamp': None, 'details': "Erro: Não foi possível localizar o link do PDF."}
 
-        pdf_response = session.get(pdf_url)
+        pdf_response = session.get(pdf_url, timeout=timeout)
         pdf_response.raise_for_status()
         pdf_content = pdf_response.content
 
