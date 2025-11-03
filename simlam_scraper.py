@@ -40,6 +40,16 @@ def parse_ajax_response(text):
             continue
     return panels
 
+def clean_despacho(text):
+    """Remove o rodapé padrão do texto do despacho."""
+    if text:
+        # Acha o início do rodapé e corta tudo a partir dali
+        footer_marker = "GOVERNO DO ESTADO DO PARÁ"
+        marker_pos = text.find(footer_marker)
+        if marker_pos != -1:
+            return text[:marker_pos].strip()
+    return text
+
 def extract_pdf_data(full_text):
     """
     Extrai as informações de um texto de PDF e retorna um dicionário.
@@ -90,24 +100,28 @@ def extract_pdf_data(full_text):
                 evento['setor_destino'] = find_value(r'Setor de destino:\s*(.+)', recebimento_text)
                 evento['data_hora_recebimento'] = find_value(r'Data/Hora do recebimento:\s*(.+)', recebimento_text)
                 despacho_match = re.search(r'Despacho:\s*([\s\S]+?)(?=$|\n\s*\n)', recebimento_text, re.IGNORECASE)
-                evento['despacho'] = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+                raw_despacho = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+                evento['despacho'] = clean_despacho(raw_despacho)
             else:
                 despacho_match = re.search(r'Despacho:\s*([\s\S]+?)(?=\nDocumento\(s\) Juntado\(s\))', bloco, re.IGNORECASE)
-                evento['despacho'] = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+                raw_despacho = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+                evento['despacho'] = clean_despacho(raw_despacho)
                 evento['setor_destino'] = find_value(r'Setor de destino:\s*(.+)', bloco)
 
         elif tipo_evento == "Envio cancelado":
             evento['data_hora_cancelamento'] = find_value(r'Data/Hora de cancelamento:\s*(.+)', bloco)
             evento['motivo'] = find_value(r'Cancelado por:\s*(.+)', bloco)
             despacho_match = re.search(r'Despacho:\s*([\s\S]+)', bloco, re.IGNORECASE)
-            evento['despacho'] = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+            raw_despacho = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+            evento['despacho'] = clean_despacho(raw_despacho)
 
         elif tipo_evento == "Mover":
             evento['setor_origem'] = find_value(r'Setor de origem:\s*(.+)', bloco)
             evento['setor_destino'] = find_value(r'Setor de destino:\s*(.+)', bloco)
             evento['data_hora_recebimento'] = find_value(r'Data/Hora do recebimento:\s*(.+)', bloco)
             despacho_match = re.search(r'Despacho:\s*([\s\S]+)', bloco, re.IGNORECASE)
-            evento['despacho'] = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+            raw_despacho = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+            evento['despacho'] = clean_despacho(raw_despacho)
 
         elif tipo_evento == "Arquivamento":
             evento['data_hora_arquivamento'] = find_value(r'Data/Hora do arquivamento:\s*(.+)', bloco)
@@ -251,9 +265,8 @@ def buscar_processo(search_term, search_type="processo"):
 
         final_data = extract_pdf_data(full_text)
         
-        # Validação Mínima: retorna None se dados essenciais não forem encontrados,
-        # evitando falsos positivos com resultados parciais (ex: apenas N/A).
-        if not final_data.get('interessado') and not final_data.get('tramitacoes'):
+        # Validação Mínima
+        if not final_data.get('empreendimento') and not final_data.get('tramitacoes'):
              return {
                 'timestamp': None,
                 'details': f"Não foram encontrados detalhes suficientes para o processo '{search_term}'. O processo pode não existir ou os dados estão indisponíveis no momento."
@@ -262,8 +275,7 @@ def buscar_processo(search_term, search_type="processo"):
         # Formata a saída para o bot
         output_lines = []
         output_lines.append(f"📄 *Resumo do Processo {final_data.get('numero_documento', search_term)}*")
-        output_lines.append(f"Situação: {final_data.get('situacao_documento', 'N/A')}")
-        output_lines.append(f"Interessado: {final_data.get('interessado', 'N/A')}")
+        output_lines.append(f"Empreendimento: {final_data.get('empreendimento', 'N/A')}")
         
         timestamp = None
         if final_data.get("tramitacoes"):
