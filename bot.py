@@ -405,11 +405,17 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
         logger.info("Nenhum processo sendo monitorado globalmente. Verificação concluída.")
         return
 
-    # Cria uma tarefa para cada processo para rodar em paralelo
-    tasks = [check_single_process(numero, context) for numero in processes_to_check]
+    # Limita a concorrência para evitar sobrecarga no DB
+    semaphore = asyncio.Semaphore(4)
+
+    async def check_with_semaphore(numero):
+        async with semaphore:
+            await check_single_process(numero, context)
+
+    tasks = [check_with_semaphore(numero) for numero in processes_to_check]
     await asyncio.gather(*tasks)
 
-    logger.info("Verificação de atualizações concluída.")
+    logger.info(f"Verificação de {len(processes_to_check)} processos concluída.")
 
 
 def main():

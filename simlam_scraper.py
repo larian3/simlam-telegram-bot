@@ -201,10 +201,8 @@ def buscar_processo(search_term, search_type="processo"):
         timeout = 240  
 
         try:
-            logger.info(f"1. Acessando página de busca: {search_page_url}")
             response = session.get(search_page_url, timeout=timeout)
             response.raise_for_status()
-            logger.info("Página de busca acessada com sucesso.")
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -212,7 +210,6 @@ def buscar_processo(search_term, search_type="processo"):
                 viewstate = soup.find('input', {'name': '__VIEWSTATE'}).get('value')
                 viewstategenerator = soup.find('input', {'name': '__VIEWSTATEGENERATOR'}).get('value')
                 eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
-                logger.info("VIEWSTATE e outros tokens extraídos.")
             except AttributeError:
                 logger.error("Falha ao extrair VIEWSTATE da página de busca.")
                 return {'timestamp': None, 'details': "Erro: Não foi possível extrair os dados de estado da página de busca."}
@@ -227,10 +224,8 @@ def buscar_processo(search_term, search_type="processo"):
                 'ctl00$baseBody$txtBusca': search_term,
                 '__ASYNCPOST': 'true',
             }
-            logger.info(f"2. Enviando termo de busca: '{search_term}'")
             response = session.post(search_page_url, data=form_data, timeout=timeout)
             response.raise_for_status()
-            logger.info("Busca enviada. Resposta recebida.")
 
             ajax_panels = parse_ajax_response(response.text)
             results_html = ajax_panels.get('ctl00_baseBody_upGrid')
@@ -239,34 +234,28 @@ def buscar_processo(search_term, search_type="processo"):
                 logger.debug(f"Resposta AJAX completa: {response.text}")
                 return {'timestamp': None, 'details': f"Nenhum resultado encontrado para {search_type} '{search_term}'. A estrutura da página pode ter mudado."}
 
-            logger.info("3. Painel de resultados encontrado na resposta AJAX.")
             soup = BeautifulSoup(results_html, 'html.parser')
             visualizar_tag = soup.find('a', title='Visualizar')
             if not (visualizar_tag and visualizar_tag.has_attr('onclick')):
                 logger.warning(f"Link 'Visualizar' não encontrado no HTML de resultados para '{search_term}'.")
                 return {'timestamp': None, 'details': f"Nenhum resultado acionável encontrado para {search_type} '{search_term}'."}
 
-            logger.info("4. Link 'Visualizar' encontrado.")
             match = re.search(fr'{view_js_function}\((\d+)\)', visualizar_tag['onclick'])
             if not match:
                 logger.error(f"Não foi possível extrair o ID do processo do atributo onclick: {visualizar_tag['onclick']}")
                 return {'timestamp': None, 'details': "Erro: Não foi possível extrair o ID do resultado."}
 
             entity_id = match.group(1)
-            logger.info(f"5. ID do processo extraído: {entity_id}")
             details_url = urljoin(search_page_url, f"{view_page}?id={entity_id}")
 
-            logger.info(f"6. Acessando página de detalhes: {details_url}")
             response = session.get(details_url, timeout=timeout)
             response.raise_for_status()
-            logger.info("Página de detalhes acessada com sucesso.")
 
             soup = BeautifulSoup(response.text, 'html.parser')
             try:
                 viewstate = soup.find('input', {'name': '__VIEWSTATE'}).get('value')
                 viewstategenerator = soup.find('input', {'name': '__VIEWSTATEGENERATOR'}).get('value')
                 eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
-                logger.info("VIEWSTATE da página de detalhes extraído.")
             except AttributeError:
                 logger.warning("Não foi possível extrair VIEWSTATE da página de detalhes. A geração de PDF pode falhar.")
                 viewstate, viewstategenerator, eventvalidation = '', '', ''
@@ -280,39 +269,31 @@ def buscar_processo(search_term, search_type="processo"):
                 '__EVENTVALIDATION': eventvalidation,
                 '__ASYNCPOST': 'true',
             }
-            logger.info("7. Solicitando geração do PDF.")
             pdf_page_response = session.post(details_url, data=pdf_form_data, timeout=timeout)
             pdf_page_response.raise_for_status()
-            logger.info("Resposta para geração do PDF recebida.")
 
             pdf_url = None
             match_pdf = re.search(r"window\.open\('([^']+)'", pdf_page_response.text)
             if match_pdf:
                 pdf_url = urljoin(details_url, match_pdf.group(1))
-                logger.info(f"8. URL do PDF encontrada via window.open: {pdf_url}")
             else:
                 logger.warning("Não foi possível encontrar 'window.open' na resposta. Tentando encontrar um link <a>.")
                 process_soup = BeautifulSoup(pdf_page_response.text, 'html.parser')
                 pdf_link_tag = process_soup.find('a', title=re.compile(r'\.pdf$', re.IGNORECASE))
                 if pdf_link_tag and pdf_link_tag.has_attr('href'):
                     pdf_url = urljoin(details_url, pdf_link_tag['href'])
-                    logger.info(f"8. URL do PDF encontrada via tag <a>: {pdf_url}")
 
             if not pdf_url:
                 logger.error("Não foi possível localizar o link do PDF na resposta do servidor.")
                 return {'timestamp': None, 'details': "Erro: Não foi possível localizar o link do PDF."}
 
-            logger.info(f"9. Baixando PDF de: {pdf_url}")
             pdf_response = session.get(pdf_url, timeout=timeout)
             pdf_response.raise_for_status()
             pdf_content = pdf_response.content
-            logger.info("PDF baixado com sucesso.")
 
-            logger.info("10. Extraindo texto do PDF.")
             doc = fitz.open(stream=pdf_content, filetype="pdf")
             full_text = "".join(page.get_text() for page in doc)
             doc.close()
-            logger.info("Texto do PDF extraído.")
 
             final_data = extract_pdf_data(full_text)
             
