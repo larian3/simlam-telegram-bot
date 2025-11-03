@@ -86,6 +86,10 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.effective_message.reply_text("Processando {} número(s)...".format(len(numeros_processo)))
 
+    adicionados = []
+    ja_monitorados = []
+    erros = []
+
     db = SessionLocal()
     try:
         # Busca processos que este chat já monitora
