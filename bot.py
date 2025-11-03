@@ -219,8 +219,20 @@ async def desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 
+async def fetch_process_for_list(numero: str) -> str:
+    """Busca um processo e retorna uma string formatada para o comando /listar."""
+    try:
+        resultado_data = await asyncio.to_thread(buscar_processo, numero)
+        empreendimento = resultado_data.get('details', '').split('\n')[1] # Pega a segunda linha da resposta formatada
+        if 'Empreendimento:' in empreendimento:
+            empreendimento_nome = empreendimento.replace('Empreendimento:', '').strip()
+            return f"- {numero} - {empreendimento_nome}"
+        return f"- {numero} - (Não foi possível obter o empreendimento)"
+    except Exception:
+        return f"- {numero} - (Erro ao buscar detalhes)"
+
 async def listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lista os processos monitorados pelo chat."""
+    """Lista os processos monitorados pelo chat com o nome do empreendimento."""
     chat_id = str(update.effective_chat.id)
     db = SessionLocal()
     try:
@@ -228,7 +240,13 @@ async def listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_processes = [row[0] for row in db.execute(query)]
         
         if user_processes:
-            lista = "\n".join([f"- {p}" for p in user_processes])
+            await update.effective_message.reply_text(f"Buscando detalhes de {len(user_processes)} processo(s), isso pode levar um momento...")
+            
+            # Cria e executa as tarefas de busca em paralelo
+            tasks = [fetch_process_for_list(p) for p in user_processes]
+            results = await asyncio.gather(*tasks)
+            
+            lista = "\n".join(results)
             await update.effective_message.reply_text(f"Você está monitorando os seguintes processos:\n{lista}")
         else:
             await update.effective_message.reply_text("Você não está monitorando nenhum processo.")
