@@ -10,6 +10,7 @@ import sys
 from urllib.parse import urljoin
 import time
 import logging
+import random
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -256,7 +257,7 @@ def buscar_processo(search_term, search_type="processo"):
             details_url = urljoin(search_page_url, f"{view_page}?id={entity_id}")
 
             # Adiciona uma pausa e o cabeçalho Referer para simular navegação humana
-            time.sleep(2)
+            time.sleep(random.uniform(2, 5))  # Pausa aleatória entre 2 e 5 segundos
             session.headers.update({'Referer': search_page_url})
             response = session.get(details_url, timeout=timeout)
             response.raise_for_status()
@@ -280,7 +281,7 @@ def buscar_processo(search_term, search_type="processo"):
                 '__ASYNCPOST': 'true',
             }
             # Adiciona uma pausa e atualiza o Referer para o pedido de geração de PDF
-            time.sleep(2)
+            time.sleep(random.uniform(2, 5))  # Pausa aleatória entre 2 e 5 segundos
             session.headers.update({'Referer': details_url})
             pdf_page_response = session.post(details_url, data=pdf_form_data, timeout=timeout)
             pdf_page_response.raise_for_status()

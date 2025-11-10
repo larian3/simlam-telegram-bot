@@ -8,6 +8,7 @@ import asyncio
 from flask import Flask
 from datetime import time
 import pytz
+import random  # Adicionar import
 from sqlalchemy import select, insert, delete, update, func
 import threading
 
@@ -405,12 +406,14 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
         logger.info("Nenhum processo sendo monitorado globalmente. Verificação concluída.")
         return
 
-    # Limita a concorrência para evitar sobrecarga no DB
+    # Limita a concorrência para evitar sobrecarga no DB e no site alvo
     semaphore = asyncio.Semaphore(4)
 
     async def check_with_semaphore(numero):
         async with semaphore:
             await check_single_process(numero, context)
+            # Adiciona uma pausa aleatória entre as verificações para não sobrecarregar o servidor
+            await asyncio.sleep(random.uniform(5, 15))
 
     tasks = [check_with_semaphore(numero) for numero in processes_to_check]
     await asyncio.gather(*tasks)
@@ -444,9 +447,9 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
 
-    # Agenda a verificação para rodar a cada 15 minutos (900 segundos)
+    # Agenda a verificação para rodar a cada 40 minutos (2400 segundos) com um jitter de 120s
     # A primeira verificação acontece 10 segundos após o bot iniciar.
-    job_queue.run_repeating(check_updates, interval=900, first=10)
+    job_queue.run_repeating(check_updates, interval=2400, first=10, jitter=120)
 
 
     print("Bot rodando...")
