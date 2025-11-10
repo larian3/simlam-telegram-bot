@@ -389,6 +389,10 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     """Verifica periodicamente por atualizações nos processos monitorados."""
+    # Jitter manual para evitar previsibilidade (alternativa ao argumento 'jitter' em versões antigas)
+    manual_jitter = random.uniform(0, 120)  # Atraso aleatório de 0 a 120 segundos
+    await asyncio.sleep(manual_jitter)
+
     logger.info("Executando verificação de atualizações...")
     
     processes_to_check = []
@@ -447,9 +451,9 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
 
-    # Agenda a verificação para rodar a cada 40 minutos (2400 segundos) com um jitter de 120s
+    # Agenda a verificação para rodar a cada 40 minutos (2400 segundos)
     # A primeira verificação acontece 10 segundos após o bot iniciar.
-    job_queue.run_repeating(check_updates, interval=2400, first=10, jitter=120)
+    job_queue.run_repeating(check_updates, interval=2400, first=10)
 
 
     print("Bot rodando...")
