@@ -205,7 +205,7 @@ def buscar_processo(search_term, search_type="processo"):
         })
 
         # Define um timeout padrão para todas as requisições da sessão
-        timeout = 240  
+        timeout = 600  # Aumentado para 10 minutos para lidar com throttling do servidor
 
         try:
             response = session.get(search_page_url, timeout=timeout)
