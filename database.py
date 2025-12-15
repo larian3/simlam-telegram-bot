@@ -6,32 +6,29 @@ from sqlalchemy.ext.declarative import declarative_base
 # Lê a URL do banco de dados da variável de ambiente
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+if not DATABASE_URL:
+    raise ValueError("A variável de ambiente DATABASE_URL não foi configurada.")
+
 # Garante que a URL use o dialeto 'postgresql' que o SQLAlchemy espera.
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # Remove parâmetros não suportados pelo psycopg2 (ex.: pgbouncer=true do Supabase pooler)
 # O psycopg2 não reconhece esses parâmetros e causa erro "invalid connection option"
-if DATABASE_URL and "?" in DATABASE_URL:
-    from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
-    parsed = urlparse(DATABASE_URL)
-    query_params = parse_qs(parsed.query)
-    # Remove parâmetros problemáticos
-    query_params.pop("pgbouncer", None)
-    query_params.pop("sslmode", None)  # Pode causar problemas também
-    # Reconstrói a URL sem os parâmetros problemáticos
-    new_query = urlencode(query_params, doseq=True) if query_params else ""
-    DATABASE_URL = urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        parsed.path,
-        parsed.params,
-        new_query,
-        parsed.fragment
-    ))
-
-if not DATABASE_URL:
-    raise ValueError("A variável de ambiente DATABASE_URL não foi configurada.")
+# Usamos regex para remover diretamente, evitando problemas com urlparse e URLs complexas
+if "?" in DATABASE_URL or "&" in DATABASE_URL:
+    import re
+    # Remove parâmetros problemáticos usando regex (mais robusto que urlparse)
+    DATABASE_URL = re.sub(r'[?&]pgbouncer=[^&]*', '', DATABASE_URL)
+    DATABASE_URL = re.sub(r'[?&]sslmode=[^&]*', '', DATABASE_URL)
+    # Remove ? ou & no final se sobrar após remover parâmetros
+    DATABASE_URL = re.sub(r'[?&]$', '', DATABASE_URL)
+    # Se o primeiro parâmetro foi removido e sobrou & no início da query string, troca por ?
+    if '&' in DATABASE_URL and '?' in DATABASE_URL:
+        # Garante que só tem um ? na URL
+        parts = DATABASE_URL.split('?', 1)
+        if len(parts) == 2:
+            DATABASE_URL = parts[0] + '?' + parts[1].lstrip('&')
 
 # Configuração do SQLAlchemy
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
