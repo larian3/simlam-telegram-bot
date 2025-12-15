@@ -289,7 +289,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             if numero not in user_monitored_set:
-                await update.effective_message.reply_text(f"❌ Você não está monitorando o processo {numero_escapado}\\. Use /monitorar para adicioná-lo\\.", parse_mode='MarkdownV2')
+                await update.effective_message.reply_text(f"❌ Você não está monitorando o processo {numero_escapado}\\. Use /monitorar para adicioná\\-lo\\.", parse_mode='MarkdownV2')
                 continue
 
             try:
@@ -436,6 +436,10 @@ def main():
     # Inicializa o banco de dados (cria tabelas se necessário)
     init_db()
 
+    # Error handler para capturar exceções não tratadas dos handlers
+    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Exceção não tratada durante o processamento de um update", exc_info=context.error)
+
     # Run Flask app in a separate thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
@@ -450,10 +454,21 @@ def main():
     app.add_handler(CommandHandler("listar", listar))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
+    app.add_error_handler(on_error)
 
     # Agenda a verificação para rodar a cada 40 minutos (2400 segundos)
     # A primeira verificação acontece 10 segundos após o bot iniciar.
-    job_queue.run_repeating(check_updates, interval=2400, first=10)
+    #
+    # Importante: se uma verificação demorar mais que o intervalo (ex.: rede travada),
+    # o APScheduler pode tentar iniciar uma segunda instância do mesmo job.
+    # Aqui garantimos 1 instância por vez e "coalescemos" execuções perdidas.
+    job_queue.run_repeating(
+        check_updates,
+        interval=2400,
+        first=10,
+        name="check_updates",
+        job_kwargs={"max_instances": 1, "coalesce": True, "misfire_grace_time": 900},
+    )
 
 
     print("Bot rodando...")

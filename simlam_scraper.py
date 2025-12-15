@@ -1,6 +1,8 @@
 # simlam_doc_scraper.py
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import fitz  # PyMuPDF
 import os
@@ -16,6 +18,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.json import JSON
 import unicodedata
+from datetime import datetime
+import html
 
 console = Console()
 
@@ -25,6 +29,62 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+def _dump_debug(filename_prefix: str, content: str) -> None:
+    """
+    Salva conteúdo bruto de respostas para depuração quando SIMLAM_DUMP_DIR estiver definido.
+    Útil para adaptar o parser quando a SEMAS muda o formato das respostas.
+    """
+    dump_dir = os.getenv("SIMLAM_DUMP_DIR")
+    if not dump_dir:
+        return
+
+    safe_prefix = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename_prefix)[:80]
+    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    os.makedirs(dump_dir, exist_ok=True)
+    path = os.path.join(dump_dir, f"{ts}_{safe_prefix}.txt")
+    try:
+        with open(path, "w", encoding="utf-8", errors="replace") as f:
+            f.write(content or "")
+        logger.warning(f"Dump de depuração salvo em: {path}")
+    except Exception as e:
+        logger.warning(f"Falha ao salvar dump de depuração em {path}: {e}")
+
+def _build_session() -> requests.Session:
+    """
+    Cria uma sessão Requests com headers "de navegador" e política de retry/backoff.
+    """
+    session = requests.Session()
+
+    # Define um conjunto de cabeçalhos para simular um navegador real
+    # Obs: não anunciamos "br" (Brotli) porque o requests não decodifica Brotli por padrão.
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+            "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "DNT": "1",  # Do Not Track
+        }
+    )
+
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=2,
+        status=3,
+        backoff_factor=0.8,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET", "POST"}),
+        raise_on_status=False,
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 def normalize_text(text):
     """Remove acentos e caracteres especiais de um texto."""
@@ -193,23 +253,22 @@ def buscar_processo(search_term, search_type="processo"):
 
         search_page_url = urljoin(base_url, search_page)
 
-        session = requests.Session()
-        # Define um conjunto de cabeçalhos para simular um navegador real
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-            'Accept-Language': 'en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'DNT': '1', # Do Not Track
-        })
+        session = _build_session()
 
-        # Define um timeout padrão para todas as requisições da sessão
-        timeout = 600  # Aumentado para 10 minutos para lidar com throttling do servidor
+        # Timeout separado (conexão, leitura). Um ConnectTimeout de 10 minutos só “prende” o job.
+        # Pode ser ajustado via variáveis de ambiente no deploy (Koyeb):
+        # SIMLAM_CONNECT_TIMEOUT=10, SIMLAM_READ_TIMEOUT=90
+        connect_timeout = float(os.getenv("SIMLAM_CONNECT_TIMEOUT", "10"))
+        read_timeout = float(os.getenv("SIMLAM_READ_TIMEOUT", "90"))
+        # A etapa de gerar/baixar PDF costuma ser bem mais lenta que a busca.
+        # Ajuste via SIMLAM_PDF_READ_TIMEOUT (ex.: 180 ou 240).
+        pdf_read_timeout = float(os.getenv("SIMLAM_PDF_READ_TIMEOUT", str(max(read_timeout, 180))))
+
+        timeout_search = (connect_timeout, read_timeout)
+        timeout_pdf = (connect_timeout, pdf_read_timeout)
 
         try:
-            response = session.get(search_page_url, timeout=timeout)
+            response = session.get(search_page_url, timeout=timeout_search)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -220,6 +279,7 @@ def buscar_processo(search_term, search_type="processo"):
                 eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
             except AttributeError:
                 logger.error("Falha ao extrair VIEWSTATE da página de busca.")
+                _dump_debug(f"search_page_no_viewstate_{search_type}_{search_term}", response.text)
                 return {'timestamp': None, 'details': "Erro: Não foi possível extrair os dados de estado da página de busca."}
 
             form_data = {
@@ -232,7 +292,7 @@ def buscar_processo(search_term, search_type="processo"):
                 'ctl00$baseBody$txtBusca': search_term,
                 '__ASYNCPOST': 'true',
             }
-            response = session.post(search_page_url, data=form_data, timeout=timeout)
+            response = session.post(search_page_url, data=form_data, timeout=timeout_search)
             response.raise_for_status()
 
             ajax_panels = parse_ajax_response(response.text)
@@ -240,12 +300,14 @@ def buscar_processo(search_term, search_type="processo"):
             if not results_html:
                 logger.warning(f"Painel de resultados 'ctl00_baseBody_upGrid' não encontrado na resposta AJAX para '{search_term}'.")
                 logger.debug(f"Resposta AJAX completa: {response.text}")
+                _dump_debug(f"search_ajax_no_grid_{search_type}_{search_term}", response.text)
                 return {'timestamp': None, 'details': f"Nenhum resultado encontrado para {search_type} '{search_term}'. A estrutura da página pode ter mudado."}
 
             soup = BeautifulSoup(results_html, 'html.parser')
             visualizar_tag = soup.find('a', title='Visualizar')
             if not (visualizar_tag and visualizar_tag.has_attr('onclick')):
                 logger.warning(f"Link 'Visualizar' não encontrado no HTML de resultados para '{search_term}'.")
+                _dump_debug(f"search_results_no_visualizar_{search_type}_{search_term}", results_html)
                 return {'timestamp': None, 'details': f"Nenhum resultado acionável encontrado para {search_type} '{search_term}'."}
 
             match = re.search(fr'{view_js_function}\((\d+)\)', visualizar_tag['onclick'])
@@ -259,7 +321,7 @@ def buscar_processo(search_term, search_type="processo"):
             # Adiciona uma pausa e o cabeçalho Referer para simular navegação humana
             time.sleep(random.uniform(2, 5))  # Pausa aleatória entre 2 e 5 segundos
             session.headers.update({'Referer': search_page_url})
-            response = session.get(details_url, timeout=timeout)
+            response = session.get(details_url, timeout=timeout_pdf)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -269,6 +331,7 @@ def buscar_processo(search_term, search_type="processo"):
                 eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'}).get('value')
             except AttributeError:
                 logger.warning("Não foi possível extrair VIEWSTATE da página de detalhes. A geração de PDF pode falhar.")
+                _dump_debug(f"details_page_no_viewstate_{search_type}_{search_term}", response.text)
                 viewstate, viewstategenerator, eventvalidation = '', '', ''
             
             pdf_form_data = {
@@ -283,25 +346,63 @@ def buscar_processo(search_term, search_type="processo"):
             # Adiciona uma pausa e atualiza o Referer para o pedido de geração de PDF
             time.sleep(random.uniform(2, 5))  # Pausa aleatória entre 2 e 5 segundos
             session.headers.update({'Referer': details_url})
-            pdf_page_response = session.post(details_url, data=pdf_form_data, timeout=timeout)
+            pdf_page_response = session.post(details_url, data=pdf_form_data, timeout=timeout_pdf)
             pdf_page_response.raise_for_status()
 
             pdf_url = None
-            match_pdf = re.search(r"window\.open\('([^']+)'", pdf_page_response.text)
+
+            # A resposta do ASP.NET pode ser HTML direto ou um payload AJAX com updatePanels.
+            ajax_panels_pdf = parse_ajax_response(pdf_page_response.text)
+            search_space = pdf_page_response.text + "\n" + "\n".join(ajax_panels_pdf.values())
+
+            # Algumas vezes o próprio SIMLAM falha ao gerar o PDF e devolve uma mensagem de erro JS/HTML.
+            # Ex.: Mensagem.publicar('Erro', 'ORA-...<br/>...').
+            match_publicar_erro = re.search(
+                r"Mensagem\.publicar\(\s*['\"]Erro['\"]\s*,\s*['\"]([\s\S]*?)['\"]\s*\)",
+                search_space,
+                flags=re.IGNORECASE,
+            )
+            if match_publicar_erro:
+                raw_msg = html.unescape(match_publicar_erro.group(1))
+                # Mantém só a primeira linha útil antes de stacktrace/HTML.
+                short_msg = re.split(r"<br\s*/?>|\n", raw_msg, maxsplit=1)[0].strip()
+                _dump_debug(f"simlam_server_error_{search_type}_{search_term}", search_space)
+                return {
+                    "timestamp": None,
+                    "details": (
+                        "O SIMLAM retornou um erro ao gerar o PDF (erro interno do servidor). "
+                        f"Detalhe: {short_msg or 'erro não especificado'}."
+                    ),
+                }
+
+            # 1) Caso clássico: window.open('...') ou window.open("...")
+            match_pdf = re.search(r"window\.open\(\s*['\"]([^'\"]+)['\"]", search_space)
             if match_pdf:
                 pdf_url = urljoin(details_url, match_pdf.group(1))
             else:
-                logger.warning("Não foi possível encontrar 'window.open' na resposta. Tentando encontrar um link <a>.")
-                process_soup = BeautifulSoup(pdf_page_response.text, 'html.parser')
-                pdf_link_tag = process_soup.find('a', title=re.compile(r'\.pdf$', re.IGNORECASE))
-                if pdf_link_tag and pdf_link_tag.has_attr('href'):
-                    pdf_url = urljoin(details_url, pdf_link_tag['href'])
+                # 2) Procura qualquer URL terminando em .pdf dentro da resposta/painéis
+                # (Algumas versões colocam o link em um atributo/href/script sem window.open)
+                match_any_pdf = re.search(r"['\"]([^'\"]+\.pdf[^'\"]*)['\"]", search_space, flags=re.IGNORECASE)
+                if match_any_pdf:
+                    pdf_url = urljoin(details_url, match_any_pdf.group(1))
+                else:
+                    logger.warning("Não foi possível encontrar link de PDF na resposta (window.open/regex). Tentando encontrar um link <a>.")
+                    process_soup = BeautifulSoup(search_space, 'html.parser')
+                    pdf_link_tag = process_soup.find('a', href=re.compile(r'\.pdf(\?|$)', re.IGNORECASE))
+                    if not pdf_link_tag:
+                        pdf_link_tag = process_soup.find('a', title=re.compile(r'\.pdf$', re.IGNORECASE))
+                    if pdf_link_tag and pdf_link_tag.has_attr('href'):
+                        pdf_url = urljoin(details_url, pdf_link_tag['href'])
 
             if not pdf_url:
                 logger.error("Não foi possível localizar o link do PDF na resposta do servidor.")
+                _dump_debug(
+                    f"pdf_link_not_found_{search_type}_{search_term}",
+                    search_space,
+                )
                 return {'timestamp': None, 'details': "Erro: Não foi possível localizar o link do PDF."}
 
-            pdf_response = session.get(pdf_url, timeout=timeout)
+            pdf_response = session.get(pdf_url, timeout=timeout_pdf)
             pdf_response.raise_for_status()
             pdf_content = pdf_response.content
 
@@ -352,12 +453,43 @@ def buscar_processo(search_term, search_type="processo"):
                 time.sleep(3)  # Espera 3 segundos antes da próxima tentativa
                 continue # Próxima iteração do loop
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Erro de conexão durante a busca por '{search_term}': {e}", exc_info=True)
+        except requests.exceptions.ConnectTimeout as e:
+            logger.error(
+                f"Timeout de conexão ao acessar o SIMLAM durante a busca por '{search_term}': {e}",
+                exc_info=True,
+            )
             if attempt < max_retries:
                 time.sleep(5) # Espera 5s se for erro de conexão
                 continue
-            return {'timestamp': None, 'details': f"Erro de conexão após {max_retries} tentativas: {e}"}
+            return {
+                "timestamp": None,
+                "details": (
+                    "Não consegui abrir conexão com o SIMLAM a partir do servidor (timeout de conexão). "
+                    "Isso costuma acontecer quando o provedor/rota do deploy está bloqueado ou sem rota até o site, "
+                    "mesmo que o site esteja acessível no seu navegador. Tente novamente mais tarde ou troque a região/host do deploy."
+                ),
+            }
+        except requests.exceptions.ReadTimeout as e:
+            logger.error(
+                f"Timeout de leitura ao acessar o SIMLAM durante a busca por '{search_term}': {e}",
+                exc_info=True,
+            )
+            if attempt < max_retries:
+                time.sleep(5)
+                continue
+            return {
+                "timestamp": None,
+                "details": (
+                    "Consegui conectar no SIMLAM, mas a resposta demorou demais (timeout de leitura). "
+                    "O site pode estar lento/limitando acessos. Tente novamente mais tarde."
+                ),
+            }
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erro HTTP ao buscar '{search_term}': {e}", exc_info=True)
+            if attempt < max_retries:
+                time.sleep(5)
+                continue
+            return {"timestamp": None, "details": f"Erro de conexão/HTTP após {max_retries} tentativas: {e}"}
         except Exception as e:
             logger.error(f"Erro inesperado ao processar '{search_term}': {e}", exc_info=True)
             if attempt < max_retries:
