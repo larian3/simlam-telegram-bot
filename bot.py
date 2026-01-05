@@ -11,6 +11,8 @@ import pytz
 import random  # Adicionar import
 from sqlalchemy import select, insert, delete, update, func
 import threading
+from typing import Optional, List
+import time as _time
 
 # Importa as configurações do banco de dados
 from database import SessionLocal, monitored_processes, process_states, group_subscriptions, init_db
@@ -324,14 +326,20 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
     """Lógica para verificar um único processo e notificar os assinantes."""
-    db = None
     try:
         logger.info(f"Verificando processo: {numero}")
-        
-        db = SessionLocal()
-        
-        state_query = select(process_states.c.last_timestamp).where(process_states.c.process_number == numero)
-        last_timestamp_result = db.execute(state_query).scalar_one_or_none()
+
+        # IMPORTANTE: DB é síncrono. Se o Postgres estiver instável, db.execute pode travar o event loop
+        # e o bot inteiro para de responder. Por isso, todo acesso ao DB aqui roda em thread.
+        def _db_get_last_timestamp(process_number: str) -> Optional[str]:
+            db = SessionLocal()
+            try:
+                state_query = select(process_states.c.last_timestamp).where(process_states.c.process_number == process_number)
+                return db.execute(state_query).scalar_one_or_none()
+            finally:
+                db.close()
+
+        last_timestamp_result = await asyncio.to_thread(_db_get_last_timestamp, numero)
 
         resultado_data = None
         for attempt in range(1, 4):
@@ -355,17 +363,30 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
         if last_timestamp_result != current_timestamp:
             logger.info(f"Atualização encontrada para o processo {numero}!")
 
-            if last_timestamp_result is None:
-                db.execute(insert(process_states).values(process_number=numero, last_timestamp=current_timestamp))
-            else:
-                update_stmt = update(process_states).where(process_states.c.process_number == numero).values(last_timestamp=current_timestamp)
-                db.execute(update_stmt)
-            
-            db.commit()
+            def _db_upsert_timestamp_and_get_subscribers(process_number: str, ts: str) -> List[str]:
+                db = SessionLocal()
+                try:
+                    if last_timestamp_result is None:
+                        db.execute(insert(process_states).values(process_number=process_number, last_timestamp=ts))
+                    else:
+                        update_stmt = (
+                            update(process_states)
+                            .where(process_states.c.process_number == process_number)
+                            .values(last_timestamp=ts)
+                        )
+                        db.execute(update_stmt)
 
-            # Busca todos os chats inscritos neste processo
-            subscribers_query = select(group_subscriptions.c.chat_id).where(group_subscriptions.c.process_number == numero)
-            subscribers = [row[0] for row in db.execute(subscribers_query)]
+                    db.commit()
+
+                    subscribers_query = select(group_subscriptions.c.chat_id).where(group_subscriptions.c.process_number == process_number)
+                    return [row[0] for row in db.execute(subscribers_query)]
+                except Exception:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+
+            subscribers = await asyncio.to_thread(_db_upsert_timestamp_and_get_subscribers, numero, current_timestamp)
 
             numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
             estado_escapado = escape_markdown(current_details, version=2)
@@ -381,11 +402,8 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Falha CRÍTICA ao verificar o processo {numero}: {e}", exc_info=True)
-        if db:
-            db.rollback()
     finally:
-        if db:
-            db.close()
+        pass
 
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     """Verifica periodicamente por atualizações nos processos monitorados."""
@@ -395,16 +413,15 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
 
     logger.info("Executando verificação de atualizações...")
     
-    processes_to_check = []
-    db = None
-    try:
+    def _db_get_all_monitored_processes() -> List[str]:
         db = SessionLocal()
-        # Busca da lista global de processos
-        all_monitored_query = select(monitored_processes.c.process_number)
-        processes_to_check = [row[0] for row in db.execute(all_monitored_query)]
-    finally:
-        if db:
+        try:
+            all_monitored_query = select(monitored_processes.c.process_number)
+            return [row[0] for row in db.execute(all_monitored_query)]
+        finally:
             db.close()
+
+    processes_to_check = await asyncio.to_thread(_db_get_all_monitored_processes)
 
     if not processes_to_check:
         logger.info("Nenhum processo sendo monitorado globalmente. Verificação concluída.")
@@ -433,16 +450,33 @@ def main():
         print("Erro: DATABASE_URL não foi configurado como variável de ambiente.")
         return
 
-    # Inicializa o banco de dados (cria tabelas se necessário)
-    init_db()
+    # Sobe o healthcheck o quanto antes para o Render detectar porta aberta,
+    # mesmo que o DB esteja instável no momento do deploy.
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # Inicializa o banco de dados (cria tabelas se necessário).
+    # IMPORTANTE: não podemos derrubar o processo se o Postgres estiver instável,
+    # senão o bot nem chega a iniciar o polling e não responde /start.
+    def _init_db_with_retries() -> None:
+        max_attempts = int(os.getenv("DB_INIT_MAX_ATTEMPTS", "5"))
+        base_sleep = float(os.getenv("DB_INIT_BASE_SLEEP", "2"))
+        for attempt in range(1, max_attempts + 1):
+            try:
+                init_db()
+                logger.info("Banco de dados inicializado com sucesso.")
+                return
+            except Exception as e:
+                logger.error(f"Falha ao inicializar o DB (tentativa {attempt}/{max_attempts}): {e}", exc_info=True)
+                if attempt < max_attempts:
+                    _time.sleep(base_sleep * attempt)
+        logger.error("DB continua indisponível. O bot seguirá ativo, mas comandos que usam DB podem falhar até o DB voltar.")
+
+    threading.Thread(target=_init_db_with_retries, daemon=True).start()
 
     # Error handler para capturar exceções não tratadas dos handlers
     async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Exceção não tratada durante o processamento de um update", exc_info=context.error)
-
-    # Run Flask app in a separate thread
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
 
     app = ApplicationBuilder().token(TOKEN).build()
     job_queue = app.job_queue
@@ -472,7 +506,8 @@ def main():
 
 
     print("Bot rodando...")
-    app.run_polling()
+    # drop_pending_updates evita backlog gigante depois de downtime/sleep do Render
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
