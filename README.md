@@ -1,20 +1,20 @@
-# 🤖 SIMLAM Telegram Bot
+# 🤖 SIMLAM Telegram Bot (v2.0)
 
-Um bot para Telegram projetado para automatizar a consulta e o monitoramento de processos no sistema SIMLAM (Sistema de Monitoramento e Licenciamento Ambiental) da SEMAS-PA. Receba notificações automáticas sobre novas movimentações nos seus processos de interesse.
-
----
-
-## ✨ Funcionalidades
-
--   **🔍 Consulta Rápida:** Envie o número de um processo diretamente no chat para obter o status atual.
--   **🔔 Monitoramento Automático:** Registre processos de interesse e seja notificado a cada 15 minutos sobre qualquer atualização.
--   **⚙️ Comandos Simples:** Utilize comandos como `/monitorar`, `/listar` e `/status` para gerenciar seus processos.
--   **🚀 Verificação Paralela:** As buscas são feitas em paralelo para garantir performance, mesmo com muitos processos monitorados.
--   **💪 Resiliente a Falhas:** O bot possui mecanismos de novas tentativas para lidar com instabilidades temporárias no site da SEMAS.
+Um bot para Telegram projetado para automatizar a consulta e o monitoramento de processos e documentos no sistema SIMLAM (Sistema de Monitoramento e Licenciamento Ambiental) da SEMAS-PA. Receba notificações automáticas sobre novas movimentações nos seus processos de interesse.
 
 ---
 
-## 🕷️ O Coração do Projeto: O Scraper (`simlam_scraper.py`)
+## Funcionalidades
+
+-   **Consulta Rápida:** Envie o número de um processo diretamente no chat para obter o status atual.
+-   **Monitoramento Automático:** Registre processos de interesse e seja notificado a cada 15 minutos sobre qualquer atualização.
+-   **Comandos Simples:** Utilize comandos como `/monitorar`, `/listar` e `/status` para gerenciar seus processos.
+-   **Verificação Paralela:** As buscas são feitas em paralelo para garantir performance, mesmo com muitos processos monitorados.
+-   **Resiliente a Falhas:** O bot possui mecanismos de novas tentativas para lidar com instabilidades temporárias no site da SEMAS.
+
+---
+
+## O Coração do Projeto: O Scraper (`simlam_scraper.py`)
 
 O componente mais complexo e vital deste projeto é o scraper, responsável por navegar no site do SIMLAM, simular a interação de um usuário e extrair as informações relevantes. O site é construído com tecnologia ASP.NET Web Forms, o que torna o scraping um desafio interessante.
 
@@ -65,7 +65,7 @@ O scraper segue um fluxo de múltiplos passos para obter os dados de um único p
 
 ---
 
-## 🛠️ Configuração e Instalação
+## Configuração e Instalação
 
 Siga os passos abaixo para executar o bot localmente.
 
@@ -111,7 +111,7 @@ Siga os passos abaixo para executar o bot localmente.
 
 ---
 
-## 🐳 Rodando com Docker
+## Rodando com Docker
 
 Este projeto também inclui um `Dockerfile` para facilitar a implantação.
 
