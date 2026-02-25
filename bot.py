@@ -45,18 +45,18 @@ def run_flask():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_message = (
-        "Olá\\! 👋 Eu sou o bot do SIMLAM\\.\n\n"
+        "Olá\\! Eu sou o bot do SIMLAM\\.\n\n"
         "Utilize os comandos abaixo para gerenciar seus monitoramentos:\n\n"
         "*PROCESSOS:*\n"
-        "🔹 `/monitorar <num>` \\- Monitorar processo\n"
-        "🔹 `/status <num>` \\- Status do processo\n"
-        "🔹 `/desmonitorar <num>` \\- Parar de monitorar\n\n"
+        "\\- `/monitorar <num>` \\- Monitorar processo\n"
+        "\\- `/status <num>` \\- Status do processo\n"
+        "\\- `/desmonitorar <num>` \\- Parar de monitorar\n\n"
         "*DOCUMENTOS:*\n"
-        "🔸 `/monitorar-doc <num>` \\- Monitorar documento\n"
-        "🔸 `/status-doc <num>` \\- Status do documento\n"
-        "🔸 `/desmonitorar-doc <num>` \\- Parar de monitorar\n\n"
+        "\\- `/monitorar-doc <num>` \\- Monitorar documento\n"
+        "\\- `/status-doc <num>` \\- Status do documento\n"
+        "\\- `/desmonitorar-doc <num>` \\- Parar de monitorar\n\n"
         "*GERAL:*\n"
-        "🔹 `/listar` \\- Ver tudo que você monitora\n\n"
+        "\\- `/listar` \\- Ver tudo que você monitora\n\n"
         "_Dica: Você pode enviar vários números separados por vírgula nos comandos\\._"
     )
     await update.effective_message.reply_text(start_message, parse_mode='MarkdownV2')
@@ -64,7 +64,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def consultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Responde a mensagens que não são comandos."""
     await update.effective_message.reply_text(
-        "⚠️ Por favor, utilize os comandos para interagir\\.\n"
+        "[!] Por favor, utilize os comandos para interagir\\.\n"
         "Exemplo: `/monitorar <numero>` ou `/monitorar-doc <numero>`\\.\n"
         "Use `/start` para ver a lista completa\\.",
         parse_mode='MarkdownV2'
@@ -182,7 +182,7 @@ async def _generic_monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE,
             details_escapado = escape_markdown(details, version=2)
             
             message = (
-                f"✅ {tipo_label} {numero_escapado} agora está sendo monitorado\\.\n\n"
+                f"[OK] {tipo_label} {numero_escapado} agora está sendo monitorado\\.\n\n"
                 f"*Situação atual:*\n{details_escapado}"
             )
             await update.effective_message.reply_text(message, parse_mode='MarkdownV2')
@@ -201,9 +201,9 @@ async def _generic_monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # Resumo final
     reply_parts = []
     if ja_monitorados:
-        reply_parts.append(f"ℹ️ Já monitorados: {', '.join(ja_monitorados)}")
+        reply_parts.append(f"[i] Já monitorados: {', '.join(ja_monitorados)}")
     if erros:
-        reply_parts.append(f"⚠️ Erros/Não encontrados: {', '.join(erros)}")
+        reply_parts.append(f"[!] Erros/Não encontrados: {', '.join(erros)}")
     
     if reply_parts:
         await update.effective_message.reply_text("\n".join(reply_parts))
@@ -225,7 +225,7 @@ async def _generic_status(update: Update, context: ContextTypes.DEFAULT_TYPE, is
         await update.effective_message.reply_text("Forneça ao menos um número.")
         return
 
-    await update.effective_message.reply_text(f"🔎 Verificando status de {len(numeros_input)} {tipo_label}(s)...")
+    await update.effective_message.reply_text(f"[...] Verificando status de {len(numeros_input)} {tipo_label}(s)...")
     
     db = SessionLocal()
     try:
@@ -251,7 +251,7 @@ async def _generic_status(update: Update, context: ContextTypes.DEFAULT_TYPE, is
             numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
 
             if storage_id not in user_subs:
-                await update.effective_message.reply_text(f"❌ Você não está monitorando o {tipo_label} {numero_escapado}\\.", parse_mode='MarkdownV2')
+                await update.effective_message.reply_text(f"[X] Você não está monitorando o {tipo_label} {numero_escapado}\\.", parse_mode='MarkdownV2')
                 continue
 
             try:
@@ -262,7 +262,7 @@ async def _generic_status(update: Update, context: ContextTypes.DEFAULT_TYPE, is
                 current_timestamp = resultado_data.get('timestamp')
                 
                 if not current_details:
-                    await update.effective_message.reply_text(f"⚠️ Falha ao obter detalhes de {numero_escapado}\\.", parse_mode='MarkdownV2')
+                    await update.effective_message.reply_text(f"[!] Falha ao obter detalhes de {numero_escapado}\\.", parse_mode='MarkdownV2')
                     continue
 
                 last_timestamp = process_states_map.get(storage_id)
@@ -277,13 +277,13 @@ async def _generic_status(update: Update, context: ContextTypes.DEFAULT_TYPE, is
                 elif current_timestamp is None:
                     update_info = "\n\n*Status:* Não foi possível determinar o status de atualização\\."
                 else:
-                    update_info = "\n\n*Status:* 📢 *Houve uma atualização desde a última verificação automática\\!*"
+                    update_info = "\n\n*Status:* [NOVO] *Houve uma atualização desde a última verificação automática\\!*"
 
                 await update.effective_message.reply_text(message_header + message_body + update_info, parse_mode='MarkdownV2')
 
             except Exception as e:
                 logger.error(f"Erro status {numero}: {e}", exc_info=True)
-                await update.effective_message.reply_text(f"⚠️ Erro ao verificar {numero_escapado}\\.", parse_mode='MarkdownV2')
+                await update.effective_message.reply_text(f"[!] Erro ao verificar {numero_escapado}\\.", parse_mode='MarkdownV2')
     finally:
         db.close()
 
@@ -347,9 +347,9 @@ async def _generic_desmonitorar(update: Update, context: ContextTypes.DEFAULT_TY
 
         reply_parts = []
         if removidos_count > 0:
-            reply_parts.append(f"❌ {removidos_count} {tipo_label}(s) removido(s).")
+            reply_parts.append(f"[X] {removidos_count} {tipo_label}(s) removido(s).")
         if nao_encontrados_count > 0:
-            reply_parts.append(f"ℹ️ {nao_encontrados_count} não estavam na lista.")
+            reply_parts.append(f"[i] {nao_encontrados_count} não estavam na lista.")
 
         await update.effective_message.reply_text("\n".join(reply_parts))
 
@@ -475,7 +475,7 @@ async def check_single_process(stored_number: str, context: ContextTypes.DEFAULT
             numero_escapado = escape_markdown(clean_num.replace('-', '\\-'), version=2)
             estado_escapado = escape_markdown(current_details, version=2)
             tipo_label = "Documento" if is_doc else "Processo"
-            message = f"📢 *Nova atualização no {tipo_label} {numero_escapado}\\!*\n\n{estado_escapado}"
+            message = f"[NOVO] *Nova atualização no {tipo_label} {numero_escapado}\\!*\n\n{estado_escapado}"
             
             for chat_id in subscribers:
                 try:

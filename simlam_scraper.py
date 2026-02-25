@@ -524,7 +524,7 @@ def main():
     Usa: python simlam_doc_scraper.py [documento|processo] [numero]
     """
     if len(sys.argv) != 3:
-        console.print("[bold red]❌ Uso incorreto.[/bold red] Exemplo:", style="yellow")
+        console.print("[bold red]Uso incorreto.[/bold red] Exemplo:", style="yellow")
         console.print("python simlam_doc_scraper.py [documento|processo] [numero]")
         return
 
