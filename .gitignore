@@ -13,6 +13,7 @@ __pycache__/
 # Arquivos de estado do Bot
 monitored_processes.json
 process_states.json
+debug_dumps/
 
 # Arquivos de configuração de IDEs e Editores
 .vscode/
@@ -23,3 +24,6 @@ process_states.json
 # Arquivos do Sistema Operacional
 .DS_Store
 Thumbs.db
+
+# Arquivos PDF (gerados ou temporários)
+*.pdf
