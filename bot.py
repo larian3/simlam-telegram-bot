@@ -52,9 +52,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\\- `/status <num>` \\- Status do processo\n"
         "\\- `/desmonitorar <num>` \\- Parar de monitorar\n\n"
         "*DOCUMENTOS:*\n"
-        "\\- `/monitorar-doc <num>` \\- Monitorar documento\n"
-        "\\- `/status-doc <num>` \\- Status do documento\n"
-        "\\- `/desmonitorar-doc <num>` \\- Parar de monitorar\n\n"
+        "\\- `/monitorar_doc <num>` \\- Monitorar documento\n"
+        "\\- `/status_doc <num>` \\- Status do documento\n"
+        "\\- `/desmonitorar_doc <num>` \\- Parar de monitorar\n\n"
         "*GERAL:*\n"
         "\\- `/listar` \\- Ver tudo que você monitora\n\n"
         "_Dica: Você pode enviar vários números separados por vírgula nos comandos\\._"
@@ -65,7 +65,7 @@ async def consultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Responde a mensagens que não são comandos."""
     await update.effective_message.reply_text(
         "[!] Por favor, utilize os comandos para interagir\\.\n"
-        "Exemplo: `/monitorar <numero>` ou `/monitorar-doc <numero>`\\.\n"
+        "Exemplo: `/monitorar <numero>` ou `/monitorar_doc <numero>`\\.\n"
         "Use `/start` para ver a lista completa\\.",
         parse_mode='MarkdownV2'
     )
@@ -103,7 +103,7 @@ async def desmonitorar_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _generic_monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE, is_document: bool):
     chat_id = str(update.effective_chat.id)
     tipo_label = "Documento" if is_document else "Processo"
-    cmd_exemplo = "/monitorar-doc" if is_document else "/monitorar"
+    cmd_exemplo = "/monitorar_doc" if is_document else "/monitorar"
     
     if not context.args:
         await update.effective_message.reply_text(f"Uso: {cmd_exemplo} <numero1>, <numero2>...")
@@ -212,7 +212,7 @@ async def _generic_monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def _generic_status(update: Update, context: ContextTypes.DEFAULT_TYPE, is_document: bool):
     chat_id = str(update.effective_chat.id)
     tipo_label = "Documento" if is_document else "Processo"
-    cmd_exemplo = "/status-doc" if is_document else "/status"
+    cmd_exemplo = "/status_doc" if is_document else "/status"
 
     if not context.args:
         await update.effective_message.reply_text(f"Uso: {cmd_exemplo} <numero1>, <numero2>...")
@@ -291,7 +291,7 @@ async def _generic_status(update: Update, context: ContextTypes.DEFAULT_TYPE, is
 async def _generic_desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE, is_document: bool):
     chat_id = str(update.effective_chat.id)
     tipo_label = "Documento" if is_document else "Processo"
-    cmd_exemplo = "/desmonitorar-doc" if is_document else "/desmonitorar"
+    cmd_exemplo = "/desmonitorar_doc" if is_document else "/desmonitorar"
 
     if not context.args:
         await update.effective_message.reply_text(f"Uso: {cmd_exemplo} <numero1>, <numero2>...")
@@ -564,12 +564,10 @@ def main():
     app.add_handler(CommandHandler("status", status))
     
     # Handlers de Documento
-    app.add_handler(CommandHandler("monitorar-doc", monitorar_doc))
-    app.add_handler(CommandHandler("monitorar_doc", monitorar_doc)) # Alias com underscore
-    app.add_handler(CommandHandler("desmonitorar-doc", desmonitorar_doc))
-    app.add_handler(CommandHandler("desmonitorar_doc", desmonitorar_doc)) # Alias
-    app.add_handler(CommandHandler("status-doc", status_doc))
-    app.add_handler(CommandHandler("status_doc", status_doc)) # Alias
+    # Comandos com hífen não são suportados pelo Telegram, usando apenas underscore
+    app.add_handler(CommandHandler("monitorar_doc", monitorar_doc)) 
+    app.add_handler(CommandHandler("desmonitorar_doc", desmonitorar_doc))
+    app.add_handler(CommandHandler("status_doc", status_doc))
 
     app.add_handler(CommandHandler("listar", listar))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
