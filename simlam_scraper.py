@@ -147,11 +147,15 @@ def extract_pdf_data(full_text):
 
     # Campos principais (busca no texto limpo)
     data['numero_documento'] = find_value(r'Numero do processo:\s*([\d/]+)', clean_text)
+    if not data['numero_documento']:
+        data['numero_documento'] = find_value(r'Numero do Documento:\s*([\d/]+)', clean_text)
+
     data['data_criacao'] = find_value(r'Data de criacao:\s*(.+)', clean_text)
     data['empreendimento'] = find_value(r'Empreendimento:\s*(.+)', clean_text)
     data['interessado'] = find_value(r'Interessado:\s*(.+)', clean_text)
     data['tipo_documento'] = find_value(r'Tipo do processo:\s*(.+)|Tipo do documento:\s*(.+)', clean_text)
     data['situacao_documento'] = find_value(r'Situacao do processo:\s*(.+)|Situacao do documento:\s*(.+)', clean_text)
+    data['origem'] = find_value(r'Origem:\s*(.+)', clean_text)
 
     # Limpa e mantém apenas chaves com valor
     data = {k: v.strip() for k, v in data.items() if v is not None}
@@ -210,7 +214,8 @@ def extract_pdf_data(full_text):
             evento['data_hora_arquivamento'] = find_value(r'Data/Hora do arquivamento:\s*(.+)', bloco)
             evento['setor'] = find_value(r'Setor:\s*(.+)', bloco)
             despacho_match = re.search(r'Observa(?:ç|c)ão:\s*([\s\S]+)', bloco, re.IGNORECASE)
-            evento['observacao'] = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+            raw_observacao = despacho_match.group(1).replace('\n', ' ').strip() if despacho_match else None
+            evento['observacao'] = clean_despacho(raw_observacao)
 
         evento_final = {k: v for k, v in evento.items() if v is not None}
         if len(evento_final) > 1:
@@ -418,17 +423,26 @@ def buscar_processo(search_term, search_type="processo"):
                 logger.info(f"Validação bem-sucedida: o número do PDF ({pdf_process_number}) corresponde ao termo de busca.")
                 
                 # Validação Mínima de conteúdo
-                if not final_data.get('empreendimento') and not final_data.get('tramitacoes'):
-                    logger.warning(f"PDF para '{search_term}' não continha 'empreendimento' ou 'tramitacoes'. Pode ser um PDF inválido ou de erro.")
+                has_content = final_data.get('tramitacoes') or final_data.get('empreendimento') or final_data.get('interessado')
+                if not has_content:
+                    logger.warning(f"PDF para '{search_term}' não continha dados suficientes. Pode ser um PDF inválido ou de erro.")
                     return {
                         'timestamp': None,
-                        'details': f"Não foram encontrados detalhes suficientes para o processo '{search_term}'. O processo pode não existir ou os dados estão indisponíveis no momento."
+                        'details': f"Não foram encontrados detalhes suficientes para '{search_term}'. O item pode não existir ou os dados estão indisponíveis no momento."
                     }
 
                 # Formata a saída para o bot
                 output_lines = []
-                output_lines.append(f"*Resumo do Processo {final_data.get('numero_documento', search_term)}*")
-                output_lines.append(f"Empreendimento: {final_data.get('empreendimento', 'N/A')}")
+                label_titulo = "Documento" if search_type == "documento" else "Processo"
+                output_lines.append(f"*Resumo do {label_titulo} {final_data.get('numero_documento', search_term)}*")
+                
+                if search_type == "processo":
+                    output_lines.append(f"Empreendimento: {final_data.get('empreendimento', 'N/A')}")
+                else:
+                    output_lines.append(f"Interessado: {final_data.get('interessado', 'N/A')}")
+                    output_lines.append(f"Tipo: {final_data.get('tipo_documento', 'N/A')}")
+                    output_lines.append(f"Origem: {final_data.get('origem', 'N/A')}")
+                    output_lines.append(f"Situação: {final_data.get('situacao_documento', 'N/A')}")
                 
                 timestamp = None
                 if final_data.get("tramitacoes"):
@@ -510,7 +524,7 @@ def main():
     Usa: python simlam_doc_scraper.py [documento|processo] [numero]
     """
     if len(sys.argv) != 3:
-        console.print("[bold red]❌ Uso incorreto.[/bold red] Exemplo:", style="yellow")
+        console.print("[bold red]Uso incorreto.[/bold red] Exemplo:", style="yellow")
         console.print("python simlam_doc_scraper.py [documento|processo] [numero]")
         return
 

@@ -8,7 +8,7 @@ import asyncio
 from flask import Flask
 from datetime import time
 import pytz
-import random  # Adicionar import
+import random
 from sqlalchemy import select, insert, delete, update, func
 import threading
 from typing import Optional, List
@@ -45,49 +45,78 @@ def run_flask():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_message = (
-        "Olá\\! 👋 Eu sou o bot do SIMLAM\\.\n\n"
-        "Envie um número de processo para uma consulta rápida ou use os comandos abaixo:\n\n"
-        "*COMANDOS DISPONÍVEIS:*\n\n"
-        "🔹 `/monitorar <proc1>, <proc2>`\n"
-        "Para receber atualizações sobre um ou mais processos\\.\n\n"
-        "🔹 `/desmonitorar <proc1>, <proc2>`\n"
-        "Para parar de receber atualizações de um ou mais processos\\.\n\n"
-        "🔹 `/status <proc1>, <proc2>`\n"
-        "Verifica o status atual de processos já monitorados\\.\n\n"
-        "🔹 `/listar`\n"
-        "Mostra todos os seus processos monitorados\\.\n\n"
-        "_Dica: Para os comandos `/monitorar`, `/desmonitorar` e `/status`, você pode enviar vários números de uma vez, separados por vírgula\\._"
+        "Olá\\! Eu sou o bot do SIMLAM\\.\n\n"
+        "Utilize os comandos abaixo para gerenciar seus monitoramentos:\n\n"
+        "*PROCESSOS:*\n"
+        "\\- `/monitorar <num>` \\- Monitorar processo\n"
+        "\\- `/status <num>` \\- Status do processo\n"
+        "\\- `/desmonitorar <num>` \\- Parar de monitorar\n\n"
+        "*DOCUMENTOS:*\n"
+        "\\- `/monitorar_doc <num>` \\- Monitorar documento\n"
+        "\\- `/status_doc <num>` \\- Status do documento\n"
+        "\\- `/desmonitorar_doc <num>` \\- Parar de monitorar\n\n"
+        "*GERAL:*\n"
+        "\\- `/listar` \\- Ver tudo que você monitora\n\n"
+        "_Dica: Você pode enviar vários números separados por vírgula nos comandos\\._"
     )
     await update.effective_message.reply_text(start_message, parse_mode='MarkdownV2')
 
 async def consultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    numero = update.effective_message.text.strip().strip('<>')
-    if not numero.replace('/', '').isdigit() or not numero:
-        await update.effective_message.reply_text("Por favor, envie um número de processo válido.")
-        return
+    """Responde a mensagens que não são comandos."""
+    await update.effective_message.reply_text(
+        "[!] Por favor, utilize os comandos para interagir\\.\n"
+        "Exemplo: `/monitorar <numero>` ou `/monitorar_doc <numero>`\\.\n"
+        "Use `/start` para ver a lista completa\\.",
+        parse_mode='MarkdownV2'
+    )
 
-    await update.effective_message.reply_text(f"🔎 Buscando informações do processo {numero}, aguarde...")
-    # Roda a função síncrona em uma thread separada para não bloquear o bot
-    resultado_data = await asyncio.to_thread(buscar_processo, numero)
-    # Escapa caracteres de Markdown para evitar erros de formatação
-    resultado_escapado = escape_markdown(resultado_data.get('details', 'Não foi possível obter detalhes.'), version=2)
-    await update.effective_message.reply_text(resultado_escapado, parse_mode='MarkdownV2')
+# --- COMANDOS DE PROCESSO ---
 
 async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Adiciona um ou mais processos à lista de monitoramento do chat."""
+    """Adiciona PROCESSOS à lista de monitoramento."""
+    await _generic_monitorar(update, context, is_document=False)
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Verifica status de PROCESSOS."""
+    await _generic_status(update, context, is_document=False)
+
+async def desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove PROCESSOS da lista."""
+    await _generic_desmonitorar(update, context, is_document=False)
+
+# --- COMANDOS DE DOCUMENTO ---
+
+async def monitorar_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Adiciona DOCUMENTOS à lista de monitoramento."""
+    await _generic_monitorar(update, context, is_document=True)
+
+async def status_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Verifica status de DOCUMENTOS."""
+    await _generic_status(update, context, is_document=True)
+
+async def desmonitorar_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove DOCUMENTOS da lista."""
+    await _generic_desmonitorar(update, context, is_document=True)
+
+# --- LÓGICA GENÉRICA COMPARTILHADA ---
+
+async def _generic_monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE, is_document: bool):
     chat_id = str(update.effective_chat.id)
+    tipo_label = "Documento" if is_document else "Processo"
+    cmd_exemplo = "/monitorar_doc" if is_document else "/monitorar"
+    
     if not context.args:
-        await update.effective_message.reply_text("Uso: /monitorar <processo1>, <processo2>, ...")
+        await update.effective_message.reply_text(f"Uso: {cmd_exemplo} <numero1>, <numero2>...")
         return
 
     numeros_str = " ".join(context.args)
-    numeros_processo = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
+    numeros_input = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
 
-    if not numeros_processo:
-        await update.effective_message.reply_text("Por favor, forneça ao menos um número de processo válido.")
+    if not numeros_input:
+        await update.effective_message.reply_text("Por favor, forneça ao menos um número válido.")
         return
         
-    await update.effective_message.reply_text("Processando {} número(s)...".format(len(numeros_processo)))
+    await update.effective_message.reply_text(f"Processando {len(numeros_input)} {tipo_label}(s)...")
 
     adicionados = []
     ja_monitorados = []
@@ -95,147 +124,267 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db = SessionLocal()
     try:
-        # Busca processos que este chat já monitora
+        # Busca o que o usuário já monitora
         query = select(group_subscriptions.c.process_number).where(group_subscriptions.c.chat_id == chat_id)
         user_monitored_set = {row[0] for row in db.execute(query)}
 
-        for numero in numeros_processo:
+        for numero in numeros_input:
             if not numero.replace('/', '').isdigit() or not numero:
                 erros.append(f"{numero} (inválido)")
                 continue
 
-            if numero not in user_monitored_set:
-                # 1. Adiciona à lista de monitoramento global apenas se não existir
-                query_exists = select(monitored_processes).where(monitored_processes.c.process_number == numero)
-                exists = db.execute(query_exists).first()
-                if not exists:
-                    stmt_global = insert(monitored_processes).values(process_number=numero)
-                    db.execute(stmt_global)
+            # Define o ID de armazenamento (Documentos ganham prefixo DOC:)
+            storage_id = f"DOC:{numero}" if is_document else numero
 
-                # 2. Cria a inscrição para este chat
-                stmt_sub = insert(group_subscriptions).values(chat_id=chat_id, process_number=numero)
-                db.execute(stmt_sub)
-                
-                # Busca o estado atual para responder ao usuário e armazena se for novo
-                try:
-                    resultado_data = await asyncio.to_thread(buscar_processo, numero)
-                    
-                    # Armazena o timestamp inicial, se o processo ainda não estiver no DB de estados
-                    if timestamp := resultado_data.get('timestamp'):
-                        state_query = select(process_states).where(process_states.c.process_number == numero)
-                        if not db.execute(state_query).first():
-                            state_stmt = insert(process_states).values(process_number=numero, last_timestamp=timestamp)
-                            db.execute(state_stmt)
-                    
-                    # Envia a mensagem com o status atual
-                    numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
-                    details = resultado_data.get('details', 'Não foi possível obter os detalhes do processo no momento.')
-                    details_escapado = escape_markdown(details, version=2)
-                    
-                    message = (
-                        f"✅ Processo {numero_escapado} agora está sendo monitorado\\.\n\n"
-                        f"*Situação atual:*\n{details_escapado}"
-                    )
-                    await update.effective_message.reply_text(message, parse_mode='MarkdownV2')
-                    adicionados.append(numero)
-
-                except Exception as e:
-                    logger.error(f"Falha ao buscar estado inicial para {numero}: {e}")
-                    erros.append(f"{numero} (falha ao buscar)")
-            else:
+            if storage_id in user_monitored_set:
                 ja_monitorados.append(numero)
+                continue
+
+            # Verifica se já existe globalmente
+            query_global = select(monitored_processes.c.process_number).where(monitored_processes.c.process_number == storage_id)
+            exists_global = db.execute(query_global).first()
+            
+            resultado_data = None
+            
+            if exists_global:
+                # Já existe, apenas busca o estado atual para mostrar ao usuário
+                search_type = "documento" if is_document else "processo"
+                resultado_data = await asyncio.to_thread(buscar_processo, numero, search_type)
+            else:
+                # Novo item global. Busca para validar e pegar timestamp inicial.
+                search_type = "documento" if is_document else "processo"
+                resultado_data = await asyncio.to_thread(buscar_processo, numero, search_type)
+                
+                # Validação: Se não retornou timestamp ou detalhes válidos, assume erro/inexistente
+                label_resumo = f"Resumo do {tipo_label}"
+                if not (resultado_data.get('timestamp') or label_resumo in resultado_data.get('details', '')):
+                    erros.append(f"{numero} (não encontrado/erro)")
+                    continue
+
+                # Insere na lista global
+                stmt_global = insert(monitored_processes).values(process_number=storage_id)
+                db.execute(stmt_global)
+
+            # Insere na lista do usuário
+            stmt_sub = insert(group_subscriptions).values(chat_id=chat_id, process_number=storage_id)
+            db.execute(stmt_sub)
+            
+            # Salva estado inicial se tiver timestamp
+            if resultado_data and resultado_data.get('timestamp'):
+                state_query = select(process_states).where(process_states.c.process_number == storage_id)
+                if not db.execute(state_query).first():
+                    state_stmt = insert(process_states).values(process_number=storage_id, last_timestamp=resultado_data.get('timestamp'))
+                    db.execute(state_stmt)
+            
+            # Resposta de sucesso
+            numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
+            details = resultado_data.get('details', 'Detalhes indisponíveis.')
+            details_escapado = escape_markdown(details, version=2)
+            
+            message = (
+                f"[OK] {tipo_label} {numero_escapado} agora está sendo monitorado\\.\n\n"
+                f"*Situação atual:*\n{details_escapado}"
+            )
+            await update.effective_message.reply_text(message, parse_mode='MarkdownV2')
+            adicionados.append(numero)
         
         db.commit()
 
     except Exception as e:
-        logger.error(f"Erro de banco de dados em /monitorar: {e}", exc_info=True)
+        logger.error(f"Erro DB em monitorar ({tipo_label}): {e}", exc_info=True)
         db.rollback()
-        await update.effective_message.reply_text("Ocorreu um erro ao processar sua solicitação. Tente novamente.")
+        await update.effective_message.reply_text("Erro ao processar. Tente novamente.")
         return
     finally:
         db.close()
 
-    # Monta a mensagem de resumo para o que não foi reportado individualmente
+    # Resumo final
     reply_parts = []
     if ja_monitorados:
-        reply_parts.append(f"ℹ️ Já estavam monitorados: {', '.join(ja_monitorados)}")
+        reply_parts.append(f"[i] Já monitorados: {', '.join(ja_monitorados)}")
     if erros:
-        reply_parts.append(f"⚠️ Erros: {', '.join(erros)}")
+        reply_parts.append(f"[!] Erros/Não encontrados: {', '.join(erros)}")
     
     if reply_parts:
         await update.effective_message.reply_text("\n".join(reply_parts))
 
-async def desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove um ou mais processos da lista de monitoramento do chat."""
+
+async def _generic_status(update: Update, context: ContextTypes.DEFAULT_TYPE, is_document: bool):
     chat_id = str(update.effective_chat.id)
+    tipo_label = "Documento" if is_document else "Processo"
+    cmd_exemplo = "/status_doc" if is_document else "/status"
+
     if not context.args:
-        await update.effective_message.reply_text("Uso: /desmonitorar <processo1>, <processo2>, ...")
+        await update.effective_message.reply_text(f"Uso: {cmd_exemplo} <numero1>, <numero2>...")
         return
 
     numeros_str = " ".join(context.args)
-    numeros_processo = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
+    numeros_input = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
 
-    if not numeros_processo:
-        await update.effective_message.reply_text("Por favor, forneça ao menos um número de processo.")
+    if not numeros_input:
+        await update.effective_message.reply_text("Forneça ao menos um número.")
         return
+
+    await update.effective_message.reply_text(f"[...] Verificando status de {len(numeros_input)} {tipo_label}(s)...")
     
     db = SessionLocal()
     try:
-        # 1. Remove as inscrições deste chat
-        stmt_delete_sub = delete(group_subscriptions).where(
-            group_subscriptions.c.chat_id == chat_id,
-            group_subscriptions.c.process_number.in_(numeros_processo)
-        )
-        result = db.execute(stmt_delete_sub)
+        # Verifica quais desses o usuário realmente monitora
+        sub_query = select(group_subscriptions.c.process_number).where(group_subscriptions.c.chat_id == chat_id)
+        user_subs = {row[0] for row in db.execute(sub_query)}
         
-        # 2. Verifica quais processos ficaram "órfãos" (sem ninguém monitorando)
-        for numero in numeros_processo:
-            query_refs = select(func.count()).select_from(group_subscriptions).where(group_subscriptions.c.process_number == numero)
-            count = db.execute(query_refs).scalar()
-            
-            if count == 0:
-                # Se ninguém mais monitora, remove da lista global
-                stmt_delete_global = delete(monitored_processes).where(monitored_processes.c.process_number == numero)
-                db.execute(stmt_delete_global)
+        # Prepara lista de IDs de armazenamento para buscar estados
+        storage_ids = []
+        for num in numeros_input:
+            s_id = f"DOC:{num}" if is_document else num
+            if s_id in user_subs:
+                storage_ids.append(s_id)
         
-        db.commit()
-        
-        removidos_count = result.rowcount
-        nao_encontrados_count = len(numeros_processo) - removidos_count
+        # Busca estados salvos
+        process_states_map = {}
+        if storage_ids:
+            states_query = select(process_states).where(process_states.c.process_number.in_(storage_ids))
+            process_states_map = {row.process_number: row.last_timestamp for row in db.execute(states_query)}
 
-        reply_parts = []
-        if removidos_count > 0:
-            reply_parts.append(f"❌ {removidos_count} processo(s) removido(s) da sua lista.")
-        if nao_encontrados_count > 0:
-            reply_parts.append(f"ℹ️ {nao_encontrados_count} processo(s) não estavam na sua lista.")
+        for numero in numeros_input:
+            storage_id = f"DOC:{numero}" if is_document else numero
+            numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
 
-        if reply_parts:
-            await update.effective_message.reply_text("\n".join(reply_parts))
-        else:
-             await update.effective_message.reply_text("Nenhum dos processos informados estava na sua lista.")
+            if storage_id not in user_subs:
+                await update.effective_message.reply_text(f"[X] Você não está monitorando o {tipo_label} {numero_escapado}\\.", parse_mode='MarkdownV2')
+                continue
 
-    except Exception as e:
-        logger.error(f"Erro de banco de dados em /desmonitorar: {e}", exc_info=True)
-        db.rollback()
-        await update.effective_message.reply_text("Ocorreu um erro ao remover os processos. Tente novamente.")
+            try:
+                search_type = "documento" if is_document else "processo"
+                resultado_data = await asyncio.to_thread(buscar_processo, numero, search_type)
+                
+                current_details = resultado_data.get('details')
+                current_timestamp = resultado_data.get('timestamp')
+                
+                if not current_details:
+                    await update.effective_message.reply_text(f"[!] Falha ao obter detalhes de {numero_escapado}\\.", parse_mode='MarkdownV2')
+                    continue
+
+                last_timestamp = process_states_map.get(storage_id)
+                estado_escapado = escape_markdown(current_details, version=2)
+                
+                message_header = f"*Situação atual do {tipo_label} {numero_escapado}:*\n\n"
+                message_body = f"{estado_escapado}"
+                
+                update_info = ""
+                if last_timestamp == current_timestamp and current_timestamp is not None:
+                    update_info = "\n\n*Status:* Sem novas atualizações desde a última verificação automática\\."
+                elif current_timestamp is None:
+                    update_info = "\n\n*Status:* Não foi possível determinar o status de atualização\\."
+                else:
+                    update_info = "\n\n*Status:* [NOVO] *Houve uma atualização desde a última verificação automática\\!*"
+
+                await update.effective_message.reply_text(message_header + message_body + update_info, parse_mode='MarkdownV2')
+
+            except Exception as e:
+                logger.error(f"Erro status {numero}: {e}", exc_info=True)
+                await update.effective_message.reply_text(f"[!] Erro ao verificar {numero_escapado}\\.", parse_mode='MarkdownV2')
     finally:
         db.close()
 
 
-async def fetch_process_for_list(numero: str) -> str:
+async def _generic_desmonitorar(update: Update, context: ContextTypes.DEFAULT_TYPE, is_document: bool):
+    chat_id = str(update.effective_chat.id)
+    tipo_label = "Documento" if is_document else "Processo"
+    cmd_exemplo = "/desmonitorar_doc" if is_document else "/desmonitorar"
+
+    if not context.args:
+        await update.effective_message.reply_text(f"Uso: {cmd_exemplo} <numero1>, <numero2>...")
+        return
+
+    numeros_str = " ".join(context.args)
+    numeros_input = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
+
+    if not numeros_input:
+        await update.effective_message.reply_text("Forneça ao menos um número.")
+        return
+    
+    db = SessionLocal()
+    try:
+        # Mapeia inputs para IDs de armazenamento
+        to_remove = []
+        for num in numeros_input:
+            s_id = f"DOC:{num}" if is_document else num
+            to_remove.append(s_id)
+        
+        # Verifica o que realmente existe na lista do usuário antes de tentar deletar
+        # (Opcional, mas ajuda a dar feedback preciso)
+        query_check = select(group_subscriptions.c.process_number).where(
+            group_subscriptions.c.chat_id == chat_id,
+            group_subscriptions.c.process_number.in_(to_remove)
+        )
+        existing_in_db = {row[0] for row in db.execute(query_check)}
+        
+        if not existing_in_db:
+             await update.effective_message.reply_text(f"Nenhum dos números informados estava na sua lista de {tipo_label}s.")
+             return
+
+        # 1. Remove as inscrições deste chat
+        stmt_delete_sub = delete(group_subscriptions).where(
+            group_subscriptions.c.chat_id == chat_id,
+            group_subscriptions.c.process_number.in_(existing_in_db)
+        )
+        db.execute(stmt_delete_sub)
+        
+        # 2. Verifica quais itens ficaram "órfãos" e limpa globalmente
+        for stored_num in existing_in_db:
+            query_refs = select(func.count()).select_from(group_subscriptions).where(group_subscriptions.c.process_number == stored_num)
+            count = db.execute(query_refs).scalar()
+            
+            if count == 0:
+                stmt_delete_global = delete(monitored_processes).where(monitored_processes.c.process_number == stored_num)
+                db.execute(stmt_delete_global)
+        
+        db.commit()
+        
+        removidos_count = len(existing_in_db)
+        nao_encontrados_count = len(numeros_input) - removidos_count
+
+        reply_parts = []
+        if removidos_count > 0:
+            reply_parts.append(f"[X] {removidos_count} {tipo_label}(s) removido(s).")
+        if nao_encontrados_count > 0:
+            reply_parts.append(f"[i] {nao_encontrados_count} não estavam na lista.")
+
+        await update.effective_message.reply_text("\n".join(reply_parts))
+
+    except Exception as e:
+        logger.error(f"Erro desmonitorar: {e}", exc_info=True)
+        db.rollback()
+        await update.effective_message.reply_text("Erro ao remover. Tente novamente.")
+    finally:
+        db.close()
+
+
+async def fetch_process_for_list(stored_number: str) -> str:
     """Busca um processo e retorna uma string formatada para o comando /listar."""
     try:
-        resultado_data = await asyncio.to_thread(buscar_processo, numero)
-        empreendimento = resultado_data.get('details', '').split('\n')[1] # Pega a segunda linha da resposta formatada
-        if 'Empreendimento:' in empreendimento:
-            empreendimento_nome = empreendimento.replace('Empreendimento:', '').strip()
-            return f"- {numero} - {empreendimento_nome}"
-        return f"- {numero} - (Não foi possível obter o empreendimento)"
+        is_doc = stored_number.startswith("DOC:")
+        search_type = "documento" if is_doc else "processo"
+        clean_num = stored_number.replace("DOC:", "")
+        
+        resultado_data = await asyncio.to_thread(buscar_processo, clean_num, search_type)
+        details = resultado_data.get('details', '')
+        
+        # Tenta extrair título/descrição
+        lines = details.split('\n')
+        desc = "(Sem descrição)"
+        if len(lines) > 1:
+            # Pega a segunda linha (Empreendimento ou Interessado)
+            desc = lines[1].strip()
+            
+        prefix = "[DOC] " if is_doc else "[PROC] "
+        return f"- {prefix}{clean_num} - {desc}"
     except Exception:
-        return f"- {numero} - (Erro ao buscar detalhes)"
+        return f"- {stored_number} - (Erro ao buscar detalhes)"
 
 async def listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lista os processos monitorados pelo chat com o nome do empreendimento."""
+    """Lista os processos monitorados pelo chat."""
     chat_id = str(update.effective_chat.id)
     db = SessionLocal()
     try:
@@ -243,116 +392,51 @@ async def listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_processes = [row[0] for row in db.execute(query)]
         
         if user_processes:
-            await update.effective_message.reply_text(f"Buscando detalhes de {len(user_processes)} processo(s), isso pode levar um momento...")
+            await update.effective_message.reply_text(f"Buscando detalhes de {len(user_processes)} item(ns), isso pode levar um momento...")
             
             # Cria e executa as tarefas de busca em paralelo
             tasks = [fetch_process_for_list(p) for p in user_processes]
             results = await asyncio.gather(*tasks)
             
             lista = "\n".join(results)
-            await update.effective_message.reply_text(f"Você está monitorando os seguintes processos:\n{lista}")
+            await update.effective_message.reply_text(f"Você está monitorando:\n{lista}")
         else:
-            await update.effective_message.reply_text("Você não está monitorando nenhum processo.")
+            await update.effective_message.reply_text("Você não está monitorando nenhum item.")
     finally:
         db.close()
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Verifica o status atual de um ou mais processos monitorados, sob demanda."""
-    chat_id = str(update.effective_chat.id)
-    if not context.args:
-        await update.effective_message.reply_text("Uso: /status <processo1>, <processo2>, ...")
-        return
-
-    numeros_str = " ".join(context.args)
-    numeros_processo = [num.strip('<>').strip() for num in numeros_str.split(',') if num.strip()]
-
-    if not numeros_processo:
-        await update.effective_message.reply_text("Por favor, forneça ao menos um número de processo.")
-        return
-
-    await update.effective_message.reply_text(f"🔎 Verificando status de {len(numeros_processo)} processo(s), aguarde...")
-    
-    db = SessionLocal()
+async def check_single_process(stored_number: str, context: ContextTypes.DEFAULT_TYPE):
+    """Lógica para verificar um único item e notificar os assinantes."""
     try:
-        # Busca os processos que o usuário monitora para validação
-        monitored_query = select(monitored_processes.c.process_number).where(
-            monitored_processes.c.process_number.in_(numeros_processo)
-        )
-        user_monitored_set = {row[0] for row in db.execute(monitored_query)}
+        logger.info(f"Verificando item: {stored_number}")
         
-        # Busca os estados dos processos
-        states_query = select(process_states).where(process_states.c.process_number.in_(numeros_processo))
-        process_states_map = {row.process_number: row.last_timestamp for row in db.execute(states_query)}
+        is_doc = stored_number.startswith("DOC:")
+        search_type = "documento" if is_doc else "processo"
+        clean_num = stored_number.replace("DOC:", "")
 
-        for numero in numeros_processo:
-            numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
-            if not numero.replace('/', '').isdigit() or not numero:
-                await update.effective_message.reply_text(f"⚠️ O número de processo '{numero_escapado}' é inválido\\.", parse_mode='MarkdownV2')
-                continue
-
-            if numero not in user_monitored_set:
-                await update.effective_message.reply_text(f"❌ Você não está monitorando o processo {numero_escapado}\\. Use /monitorar para adicioná\\-lo\\.", parse_mode='MarkdownV2')
-                continue
-
-            try:
-                resultado_data = await asyncio.to_thread(buscar_processo, numero)
-                current_details = resultado_data.get('details')
-                current_timestamp = resultado_data.get('timestamp')
-                
-                if not current_details:
-                    await update.effective_message.reply_text(f"⚠️ Não foi possível obter detalhes para o processo {numero_escapado}\\. Motivo: Nenhum detalhe retornado\\.", parse_mode='MarkdownV2')
-                    continue
-
-                last_timestamp = process_states_map.get(numero)
-                estado_escapado = escape_markdown(current_details, version=2)
-                
-                message_header = f"*Situação atual do processo {numero_escapado}:*\n\n"
-                message_body = f"{estado_escapado}"
-                
-                if last_timestamp == current_timestamp and current_timestamp is not None:
-                    update_info = "\n\n*Status:* Sem novas atualizações desde a última verificação automática\\."
-                elif current_timestamp is None:
-                    update_info = "\n\n*Status:* Não foi possível determinar o status de atualização \\(sem data de tramitação\\)\\."
-                else:
-                    update_info = "\n\n*Status:* 📢 *Houve uma atualização desde a última verificação automática\\!*"
-
-                full_message = message_header + message_body + update_info
-                await update.effective_message.reply_text(full_message, parse_mode='MarkdownV2')
-            except Exception as e:
-                logger.error(f"Erro ao verificar o status do processo {numero}: {e}", exc_info=True)
-                await update.effective_message.reply_text(f"⚠️ Ocorreu um erro ao verificar o processo {numero_escapado}\\. Tente novamente mais tarde\\.", parse_mode='MarkdownV2')
-    finally:
-        db.close()
-
-async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
-    """Lógica para verificar um único processo e notificar os assinantes."""
-    try:
-        logger.info(f"Verificando processo: {numero}")
-
-        # IMPORTANTE: DB é síncrono. Se o Postgres estiver instável, db.execute pode travar o event loop
-        # e o bot inteiro para de responder. Por isso, todo acesso ao DB aqui roda em thread.
-        def _db_get_last_timestamp(process_number: str) -> Optional[str]:
+        # IMPORTANTE: DB é síncrono.
+        def _db_get_last_timestamp(p_num: str) -> Optional[str]:
             db = SessionLocal()
             try:
-                state_query = select(process_states.c.last_timestamp).where(process_states.c.process_number == process_number)
+                state_query = select(process_states.c.last_timestamp).where(process_states.c.process_number == p_num)
                 return db.execute(state_query).scalar_one_or_none()
             finally:
                 db.close()
 
-        last_timestamp_result = await asyncio.to_thread(_db_get_last_timestamp, numero)
+        last_timestamp_result = await asyncio.to_thread(_db_get_last_timestamp, stored_number)
 
         resultado_data = None
         for attempt in range(1, 4):
-            resultado_data = await asyncio.to_thread(buscar_processo, numero)
+            resultado_data = await asyncio.to_thread(buscar_processo, clean_num, search_type)
             current_timestamp = resultado_data.get('timestamp')
             if current_timestamp:
                 break
             if attempt < 3:
-                logger.warning(f"Tentativa {attempt}/3 falhou para {numero} (sem timestamp). Detalhes: {resultado_data.get('details')}. Tentando de novo em 5s...")
+                logger.warning(f"Tentativa {attempt}/3 falhou para {stored_number}. Tentando de novo em 5s...")
                 await asyncio.sleep(5)
             else:
-                logger.error(f"Falha ao obter timestamp para {numero} após 3 tentativas. Detalhes: {resultado_data.get('details')}")
-                return # Encerra a verificação para este processo
+                logger.error(f"Falha ao obter timestamp para {stored_number} após 3 tentativas.")
+                return 
 
         current_timestamp = resultado_data.get('timestamp')
         current_details = resultado_data.get('details')
@@ -361,24 +445,24 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if last_timestamp_result != current_timestamp:
-            logger.info(f"Atualização encontrada para o processo {numero}!")
+            logger.info(f"Atualização encontrada para {stored_number}!")
 
-            def _db_upsert_timestamp_and_get_subscribers(process_number: str, ts: str) -> List[str]:
+            def _db_upsert_timestamp_and_get_subscribers(p_num: str, ts: str) -> List[str]:
                 db = SessionLocal()
                 try:
                     if last_timestamp_result is None:
-                        db.execute(insert(process_states).values(process_number=process_number, last_timestamp=ts))
+                        db.execute(insert(process_states).values(process_number=p_num, last_timestamp=ts))
                     else:
                         update_stmt = (
                             update(process_states)
-                            .where(process_states.c.process_number == process_number)
+                            .where(process_states.c.process_number == p_num)
                             .values(last_timestamp=ts)
                         )
                         db.execute(update_stmt)
 
                     db.commit()
 
-                    subscribers_query = select(group_subscriptions.c.chat_id).where(group_subscriptions.c.process_number == process_number)
+                    subscribers_query = select(group_subscriptions.c.chat_id).where(group_subscriptions.c.process_number == p_num)
                     return [row[0] for row in db.execute(subscribers_query)]
                 except Exception:
                     db.rollback()
@@ -386,29 +470,29 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
                 finally:
                     db.close()
 
-            subscribers = await asyncio.to_thread(_db_upsert_timestamp_and_get_subscribers, numero, current_timestamp)
+            subscribers = await asyncio.to_thread(_db_upsert_timestamp_and_get_subscribers, stored_number, current_timestamp)
 
-            numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
+            numero_escapado = escape_markdown(clean_num.replace('-', '\\-'), version=2)
             estado_escapado = escape_markdown(current_details, version=2)
-            message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
+            tipo_label = "Documento" if is_doc else "Processo"
+            message = f"[NOVO] *Nova atualização no {tipo_label} {numero_escapado}\\!*\n\n{estado_escapado}"
             
             for chat_id in subscribers:
                 try:
                     await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2')
                 except Exception as e:
-                    logger.error(f"Falha ao enviar mensagem de atualização para {chat_id} no processo {numero}: {e}")
+                    logger.error(f"Falha ao enviar mensagem de atualização para {chat_id}: {e}")
         else:
-            logger.info(f"Processo {numero} sem atualizações.")
+            logger.info(f"Item {stored_number} sem atualizações.")
 
     except Exception as e:
-        logger.error(f"Falha CRÍTICA ao verificar o processo {numero}: {e}", exc_info=True)
+        logger.error(f"Falha CRÍTICA ao verificar {stored_number}: {e}", exc_info=True)
     finally:
         pass
 
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     """Verifica periodicamente por atualizações nos processos monitorados."""
-    # Jitter manual para evitar previsibilidade (alternativa ao argumento 'jitter' em versões antigas)
-    manual_jitter = random.uniform(0, 120)  # Atraso aleatório de 0 a 120 segundos
+    manual_jitter = random.uniform(0, 120)
     await asyncio.sleep(manual_jitter)
 
     logger.info("Executando verificação de atualizações...")
@@ -424,22 +508,20 @@ async def check_updates(context: ContextTypes.DEFAULT_TYPE):
     processes_to_check = await asyncio.to_thread(_db_get_all_monitored_processes)
 
     if not processes_to_check:
-        logger.info("Nenhum processo sendo monitorado globalmente. Verificação concluída.")
+        logger.info("Nenhum item sendo monitorado. Verificação concluída.")
         return
 
-    # Limita a concorrência para evitar sobrecarga no DB e no site alvo
     semaphore = asyncio.Semaphore(4)
 
     async def check_with_semaphore(numero):
         async with semaphore:
             await check_single_process(numero, context)
-            # Adiciona uma pausa aleatória entre as verificações para não sobrecarregar o servidor
             await asyncio.sleep(random.uniform(5, 15))
 
     tasks = [check_with_semaphore(numero) for numero in processes_to_check]
     await asyncio.gather(*tasks)
 
-    logger.info(f"Verificação de {len(processes_to_check)} processos concluída.")
+    logger.info(f"Verificação de {len(processes_to_check)} itens concluída.")
 
 
 def main():
@@ -450,14 +532,9 @@ def main():
         print("Erro: DATABASE_URL não foi configurado como variável de ambiente.")
         return
 
-    # Sobe o healthcheck o quanto antes para o Render detectar porta aberta,
-    # mesmo que o DB esteja instável no momento do deploy.
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # Inicializa o banco de dados (cria tabelas se necessário).
-    # IMPORTANTE: não podemos derrubar o processo se o Postgres estiver instável,
-    # senão o bot nem chega a iniciar o polling e não responde /start.
     def _init_db_with_retries() -> None:
         max_attempts = int(os.getenv("DB_INIT_MAX_ATTEMPTS", "5"))
         base_sleep = float(os.getenv("DB_INIT_BASE_SLEEP", "2"))
@@ -474,28 +551,28 @@ def main():
 
     threading.Thread(target=_init_db_with_retries, daemon=True).start()
 
-    # Error handler para capturar exceções não tratadas dos handlers
     async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Exceção não tratada durante o processamento de um update", exc_info=context.error)
 
     app = ApplicationBuilder().token(TOKEN).build()
     job_queue = app.job_queue
 
-    # Adiciona os handlers
+    # Handlers de Processo
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("monitorar", monitorar))
     app.add_handler(CommandHandler("desmonitorar", desmonitorar))
-    app.add_handler(CommandHandler("listar", listar))
     app.add_handler(CommandHandler("status", status))
+    
+    # Handlers de Documento
+    # Comandos com hífen não são suportados pelo Telegram, usando apenas underscore
+    app.add_handler(CommandHandler("monitorar_doc", monitorar_doc)) 
+    app.add_handler(CommandHandler("desmonitorar_doc", desmonitorar_doc))
+    app.add_handler(CommandHandler("status_doc", status_doc))
+
+    app.add_handler(CommandHandler("listar", listar))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
     app.add_error_handler(on_error)
 
-    # Agenda a verificação para rodar a cada 40 minutos (2400 segundos)
-    # A primeira verificação acontece 10 segundos após o bot iniciar.
-    #
-    # Importante: se uma verificação demorar mais que o intervalo (ex.: rede travada),
-    # o APScheduler pode tentar iniciar uma segunda instância do mesmo job.
-    # Aqui garantimos 1 instância por vez e "coalescemos" execuções perdidas.
     job_queue.run_repeating(
         check_updates,
         interval=2400,
@@ -504,9 +581,7 @@ def main():
         job_kwargs={"max_instances": 1, "coalesce": True, "misfire_grace_time": 900},
     )
 
-
     print("Bot rodando...")
-    # drop_pending_updates evita backlog gigante depois de downtime/sleep do Render
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":

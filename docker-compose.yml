@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: simlam_bot
+    restart: always
+    depends_on:
+      - db
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DATABASE_URL=${DATABASE_URL}
+      - PORT=8080
+      - DB_SSLMODE=${DB_SSLMODE}
+      - SIMLAM_CONNECT_TIMEOUT=${SIMLAM_CONNECT_TIMEOUT}
+      - SIMLAM_READ_TIMEOUT=${SIMLAM_READ_TIMEOUT}
+      - SIMLAM_PDF_READ_TIMEOUT=${SIMLAM_PDF_READ_TIMEOUT}
+    ports:
+      - "8080:8080"
+
+  db:
+    image: postgres:15-alpine
+    container_name: simlam_db
+    restart: always
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-simlam_bot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:
