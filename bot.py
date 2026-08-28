@@ -6,12 +6,12 @@ import logging
 import os
 import asyncio
 from flask import Flask
-from datetime import time
+from datetime import datetime, time as dt_time, timedelta, timezone
 import pytz
 import random  # Adicionar import
 from sqlalchemy import select, insert, delete, update, func
 import threading
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 import time as _time
 
 # Importa as configurações do banco de dados
@@ -27,6 +27,63 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL") # Garante que a variável de ambiente do DB seja lida
+
+# --- Monitoramento adaptativo ---
+# last_timestamp (process_states) = última tramitação no SIMLAM.
+# last_checked_at (monitored_processes) = última consulta feita pelo bot.
+TZ_BR = pytz.timezone("America/Sao_Paulo")
+ACTIVE_WINDOW = timedelta(days=30)
+FREQUENT_INTERVAL_SECONDS = 2400  # ~40 minutos
+# python-telegram-bot v20+: days usa cron (0=domingo ... 6=sábado)
+LOW_FREQUENCY_CRON_DAYS = (1, 4)  # segunda e quinta
+LOW_FREQUENCY_TIME = dt_time(9, 0, tzinfo=TZ_BR)
+MONITOR_FREQUENT = "frequent"
+MONITOR_LOW = "low_frequency"
+
+
+def parse_movement_datetime(ts: Optional[str]) -> Optional[datetime]:
+    """Converte o timestamp de tramitação do SIMLAM (ex.: 28/08/2026 10:00:00)."""
+    if not ts:
+        return None
+    ts_clean = str(ts).strip()
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        try:
+            dt = datetime.strptime(ts_clean, fmt)
+            return TZ_BR.localize(dt)
+        except ValueError:
+            continue
+    return None
+
+
+def is_frequent_process(
+    last_timestamp: Optional[str],
+    first_monitored_at: Optional[datetime] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """
+    Processo ativo (consulta a cada ~40 min) se:
+    - ainda não tem data de tramitação; OU
+    - a última movimentação ocorreu há no máximo 30 dias (inclusive); OU
+    - foi cadastrado no monitoramento há no máximo 30 dias.
+    """
+    now = now or datetime.now(TZ_BR)
+    if now.tzinfo is None:
+        now = TZ_BR.localize(now)
+
+    parsed = parse_movement_datetime(last_timestamp)
+    if parsed is None:
+        return True
+    if (now - parsed) <= ACTIVE_WINDOW:
+        return True
+
+    if first_monitored_at is not None:
+        first = first_monitored_at
+        if first.tzinfo is None:
+            first = first.replace(tzinfo=timezone.utc)
+        first = first.astimezone(TZ_BR)
+        if (now - first) <= ACTIVE_WINDOW:
+            return True
+    return False
 
 # --- Flask App ---
 # This is a minimal web server to keep the bot alive on free hosting platforms.
@@ -109,7 +166,10 @@ async def monitorar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query_exists = select(monitored_processes).where(monitored_processes.c.process_number == numero)
                 exists = db.execute(query_exists).first()
                 if not exists:
-                    stmt_global = insert(monitored_processes).values(process_number=numero)
+                    stmt_global = insert(monitored_processes).values(
+                        process_number=numero,
+                        first_monitored_at=datetime.now(timezone.utc),
+                    )
                     db.execute(stmt_global)
 
                 # 2. Cria a inscrição para este chat
@@ -324,10 +384,85 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
-async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
-    """Lógica para verificar um único processo e notificar os assinantes."""
+def _db_mark_checked(process_number: str) -> None:
+    """Atualiza last_checked_at após uma consulta efetiva ao SIMLAM."""
+    db = SessionLocal()
     try:
-        logger.info(f"Verificando processo: {numero}")
+        db.execute(
+            update(monitored_processes)
+            .where(monitored_processes.c.process_number == process_number)
+            .values(last_checked_at=datetime.now(timezone.utc))
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _db_get_monitored_with_timestamps() -> List[Tuple[str, Optional[str], Optional[datetime]]]:
+    """Retorna (process_number, last_timestamp, first_monitored_at) de todos os monitorados."""
+    db = SessionLocal()
+    try:
+        query = (
+            select(
+                monitored_processes.c.process_number,
+                process_states.c.last_timestamp,
+                monitored_processes.c.first_monitored_at,
+            )
+            .select_from(
+                monitored_processes.outerjoin(
+                    process_states,
+                    monitored_processes.c.process_number == process_states.c.process_number,
+                )
+            )
+        )
+        return [(row[0], row[1], row[2]) for row in db.execute(query)]
+    finally:
+        db.close()
+
+
+def classify_monitored_processes(
+    rows: List[Tuple[str, Optional[str], Optional[datetime]]],
+    now: Optional[datetime] = None,
+) -> Dict[str, List[str]]:
+    """Separa processos em grupos mutuamente exclusivos: frequente vs baixa frequência."""
+    now = now or datetime.now(TZ_BR)
+    frequent: List[str] = []
+    low_frequency: List[str] = []
+    just_demoted: List[str] = []
+
+    for numero, last_timestamp, first_monitored_at in rows:
+        if is_frequent_process(last_timestamp, first_monitored_at, now):
+            frequent.append(numero)
+            continue
+        low_frequency.append(numero)
+        parsed = parse_movement_datetime(last_timestamp)
+        if parsed is not None:
+            age = now - parsed
+            if timedelta(days=30) < age <= timedelta(days=31):
+                just_demoted.append(numero)
+
+    return {
+        MONITOR_FREQUENT: frequent,
+        MONITOR_LOW: low_frequency,
+        "just_demoted": just_demoted,
+    }
+
+
+async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
+    """Lógica para verificar um único processo e notificar os assinantes."""
+    result: Dict[str, Any] = {
+        "numero": numero,
+        "status": "error",
+        "updated": False,
+        "promoted": False,
+        "consulted": False,
+    }
+    consulted = False
+    try:
+        logger.info(f"[PROCESSO] {numero} consultado.")
 
         # IMPORTANTE: DB é síncrono. Se o Postgres estiver instável, db.execute pode travar o event loop
         # e o bot inteiro para de responder. Por isso, todo acesso ao DB aqui roda em thread.
@@ -340,9 +475,11 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
                 db.close()
 
         last_timestamp_result = await asyncio.to_thread(_db_get_last_timestamp, numero)
+        was_frequent = is_frequent_process(last_timestamp_result)
 
         resultado_data = None
         for attempt in range(1, 4):
+            consulted = True
             resultado_data = await asyncio.to_thread(buscar_processo, numero)
             current_timestamp = resultado_data.get('timestamp')
             if current_timestamp:
@@ -352,16 +489,18 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(5)
             else:
                 logger.error(f"Falha ao obter timestamp para {numero} após 3 tentativas. Detalhes: {resultado_data.get('details')}")
-                return # Encerra a verificação para este processo
+                result["status"] = "no_timestamp"
+                return result
 
         current_timestamp = resultado_data.get('timestamp')
         current_details = resultado_data.get('details')
 
         if not current_timestamp:
-            return
+            result["status"] = "no_timestamp"
+            return result
 
         if last_timestamp_result != current_timestamp:
-            logger.info(f"Atualização encontrada para o processo {numero}!")
+            logger.info(f"[PROCESSO] {numero} consultado. Nova movimentação encontrada.")
 
             def _db_upsert_timestamp_and_get_subscribers(process_number: str, ts: str) -> List[str]:
                 db = SessionLocal()
@@ -388,6 +527,13 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
 
             subscribers = await asyncio.to_thread(_db_upsert_timestamp_and_get_subscribers, numero, current_timestamp)
 
+            now_frequent = is_frequent_process(current_timestamp)
+            if last_timestamp_result is not None and not was_frequent and now_frequent:
+                result["promoted"] = True
+                logger.info(
+                    f"[PROCESSO] {numero} voltou para monitoramento frequente após nova movimentação."
+                )
+
             numero_escapado = escape_markdown(numero.replace('-', '\\-'), version=2)
             estado_escapado = escape_markdown(current_details, version=2)
             message = f"📢 *Nova atualização no processo {numero_escapado}\\!*\n\n{estado_escapado}"
@@ -397,49 +543,109 @@ async def check_single_process(numero: str, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2')
                 except Exception as e:
                     logger.error(f"Falha ao enviar mensagem de atualização para {chat_id} no processo {numero}: {e}")
+            result["status"] = "updated"
+            result["updated"] = True
         else:
-            logger.info(f"Processo {numero} sem atualizações.")
+            logger.info(f"[PROCESSO] {numero} consultado. Nenhuma nova movimentação encontrada.")
+            result["status"] = "unchanged"
 
     except Exception as e:
         logger.error(f"Falha CRÍTICA ao verificar o processo {numero}: {e}", exc_info=True)
+        result["status"] = "error"
     finally:
-        pass
+        result["consulted"] = consulted
+        if consulted:
+            try:
+                await asyncio.to_thread(_db_mark_checked, numero)
+            except Exception as e:
+                logger.error(f"Falha ao atualizar last_checked_at de {numero}: {e}", exc_info=True)
+    return result
 
 async def check_updates(context: ContextTypes.DEFAULT_TYPE):
-    """Verifica periodicamente por atualizações nos processos monitorados."""
-    # Jitter manual para evitar previsibilidade (alternativa ao argumento 'jitter' em versões antigas)
-    manual_jitter = random.uniform(0, 120)  # Atraso aleatório de 0 a 120 segundos
-    await asyncio.sleep(manual_jitter)
+    """
+    Job único de monitoramento, parametrizado por context.job.data:
+    - frequent: só processos com movimentação nos últimos 30 dias (ou sem data)
+    - low_frequency: só processos parados há mais de 30 dias (segunda e quinta)
+    """
+    started = _time.monotonic()
+    mode = MONITOR_FREQUENT
+    if context.job is not None and context.job.data:
+        mode = context.job.data
 
-    logger.info("Executando verificação de atualizações...")
-    
-    def _db_get_all_monitored_processes() -> List[str]:
-        db = SessionLocal()
-        try:
-            all_monitored_query = select(monitored_processes.c.process_number)
-            return [row[0] for row in db.execute(all_monitored_query)]
-        finally:
-            db.close()
+    # Jitter apenas no ciclo frequente, para não atrasar o agendamento de segunda/quinta.
+    if mode == MONITOR_FREQUENT:
+        manual_jitter = random.uniform(0, 120)
+        await asyncio.sleep(manual_jitter)
 
-    processes_to_check = await asyncio.to_thread(_db_get_all_monitored_processes)
+    logger.info(f"[MONITORAMENTO] Iniciando ciclo ({mode})...")
 
-    if not processes_to_check:
-        logger.info("Nenhum processo sendo monitorado globalmente. Verificação concluída.")
+    try:
+        rows = await asyncio.to_thread(_db_get_monitored_with_timestamps)
+    except Exception as e:
+        logger.error(f"[MONITORAMENTO] Falha ao listar processos no DB: {e}", exc_info=True)
         return
 
-    # Limita a concorrência para evitar sobrecarga no DB e no site alvo
+    groups = classify_monitored_processes(rows)
+    frequent = groups[MONITOR_FREQUENT]
+    low_frequency = groups[MONITOR_LOW]
+    total = len(rows)
+
+    logger.info(f"[MONITORAMENTO] {len(frequent)} processos selecionados para monitoramento frequente.")
+    logger.info(f"[MONITORAMENTO] {len(low_frequency)} processos selecionados para baixa frequência.")
+
+    for numero in groups["just_demoted"]:
+        logger.info(f"[PROCESSO] {numero} passou para monitoramento de baixa frequência.")
+
+    if mode == MONITOR_FREQUENT:
+        processes_to_check = frequent
+        ignored = len(low_frequency)
+    else:
+        processes_to_check = low_frequency
+        ignored = len(frequent)
+
+    logger.info(
+        f"[MONITORAMENTO] Ciclo {mode}: {len(processes_to_check)} a consultar, {ignored} ignorados neste ciclo."
+    )
+
+    if not processes_to_check:
+        elapsed = _time.monotonic() - started
+        logger.info(f"[MONITORAMENTO] Nenhum processo para este ciclo. Duração: {elapsed:.1f}s.")
+        return
+
     semaphore = asyncio.Semaphore(4)
 
-    async def check_with_semaphore(numero):
+    async def check_with_semaphore(numero: str) -> Dict[str, Any]:
         async with semaphore:
-            await check_single_process(numero, context)
-            # Adiciona uma pausa aleatória entre as verificações para não sobrecarregar o servidor
-            await asyncio.sleep(random.uniform(5, 15))
+            try:
+                return await check_single_process(numero, context)
+            except Exception as e:
+                logger.error(f"Erro isolado ao verificar {numero}: {e}", exc_info=True)
+                return {"numero": numero, "status": "error", "updated": False, "promoted": False, "consulted": False}
+            finally:
+                await asyncio.sleep(random.uniform(5, 15))
 
-    tasks = [check_with_semaphore(numero) for numero in processes_to_check]
-    await asyncio.gather(*tasks)
+    results = await asyncio.gather(*[check_with_semaphore(numero) for numero in processes_to_check])
 
-    logger.info(f"Verificação de {len(processes_to_check)} processos concluída.")
+    updates = sum(1 for r in results if r.get("updated"))
+    promoted = sum(1 for r in results if r.get("promoted"))
+    errors = sum(1 for r in results if r.get("status") == "error")
+    no_ts = sum(1 for r in results if r.get("status") == "no_timestamp")
+    consulted = sum(1 for r in results if r.get("consulted"))
+    elapsed = _time.monotonic() - started
+
+    logger.info(
+        "[MONITORAMENTO] Ciclo %s concluído. total_monitorados=%s consultados=%s ignorados=%s "
+        "novas_movimentacoes=%s promovidos=%s sem_timestamp=%s erros=%s duracao=%.1fs",
+        mode,
+        total,
+        consulted,
+        ignored,
+        updates,
+        promoted,
+        no_ts,
+        errors,
+        elapsed,
+    )
 
 
 def main():
@@ -490,18 +696,24 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, consultar))
     app.add_error_handler(on_error)
 
-    # Agenda a verificação para rodar a cada 40 minutos (2400 segundos)
-    # A primeira verificação acontece 10 segundos após o bot iniciar.
-    #
-    # Importante: se uma verificação demorar mais que o intervalo (ex.: rede travada),
-    # o APScheduler pode tentar iniciar uma segunda instância do mesmo job.
-    # Aqui garantimos 1 instância por vez e "coalescemos" execuções perdidas.
+    # Monitoramento adaptativo (mesma aplicação, dois jobs mutuamente exclusivos):
+    # - frequentes: a cada ~40 min (movimentação <= 30 dias, ou processo novo/sem data)
+    # - baixa frequência: segunda e quinta às 09:00 America/Sao_Paulo (parados > 30 dias)
     job_queue.run_repeating(
         check_updates,
-        interval=2400,
+        interval=FREQUENT_INTERVAL_SECONDS,
         first=10,
-        name="check_updates",
+        name="check_frequent_updates",
+        data=MONITOR_FREQUENT,
         job_kwargs={"max_instances": 1, "coalesce": True, "misfire_grace_time": 900},
+    )
+    job_queue.run_daily(
+        check_updates,
+        time=LOW_FREQUENCY_TIME,
+        days=LOW_FREQUENCY_CRON_DAYS,
+        name="check_low_frequency_updates",
+        data=MONITOR_LOW,
+        job_kwargs={"max_instances": 1, "coalesce": True, "misfire_grace_time": 3600},
     )
 
 

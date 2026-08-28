@@ -1,3 +1,6 @@
+# Segredos locais
+.env
+
 # Ambiente Virtual
 venv/
 /venv/

@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, String, MetaData, Table, inspect
+from sqlalchemy import create_engine, Column, String, DateTime, MetaData, Table, inspect, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.engine.url import make_url
@@ -75,9 +75,13 @@ metadata = MetaData()
 
 # Define a tabela para processos monitorados (agora uma lista global única)
 # Cada processo é verificado apenas uma vez, independentemente de quantos grupos o seguem.
+# last_checked_at = última vez que o bot consultou o SIMLAM (não confundir com last_timestamp).
+# first_monitored_at = quando o processo entrou no monitoramento (graça de 30 dias para processos novos).
 monitored_processes = Table(
     'monitored_processes', metadata,
-    Column('process_number', String, primary_key=True)
+    Column('process_number', String, primary_key=True),
+    Column('last_checked_at', DateTime(timezone=True), nullable=True),
+    Column('first_monitored_at', DateTime(timezone=True), nullable=True),
 )
 
 # Nova tabela para ligar os grupos aos processos que eles desejam monitorar
@@ -87,7 +91,8 @@ group_subscriptions = Table(
     Column('process_number', String, primary_key=True)
 )
 
-# Define a tabela para o estado (timestamp) dos processos
+# Define a tabela para o estado (timestamp) dos processos.
+# last_timestamp = data/hora da última tramitação identificada no SIMLAM (last_movement_at).
 process_states = Table(
     'process_states', metadata,
     Column('process_number', String, primary_key=True),
@@ -95,9 +100,40 @@ process_states = Table(
 )
 
 
+def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:
+    """
+    create_all não adiciona colunas em tabelas já existentes.
+    Aplica ALTER TABLE incremental em deploys com banco antigo.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table(table_name):
+        return
+    columns = {col["name"] for col in inspector.get_columns(table_name)}
+    if column_name in columns:
+        return
+    print(f"Adicionando coluna {column_name} em {table_name}...")
+    with engine.begin() as conn:
+        conn.execute(text(ddl))
+    print(f"Coluna {column_name} criada com sucesso.")
+
+
+def _ensure_adaptive_columns() -> None:
+    _ensure_column(
+        "monitored_processes",
+        "last_checked_at",
+        "ALTER TABLE monitored_processes ADD COLUMN last_checked_at TIMESTAMP WITH TIME ZONE",
+    )
+    _ensure_column(
+        "monitored_processes",
+        "first_monitored_at",
+        "ALTER TABLE monitored_processes ADD COLUMN first_monitored_at TIMESTAMP WITH TIME ZONE",
+    )
+
+
 def init_db():
     """
-    Cria as tabelas no banco de dados se elas ainda não existirem.
+    Cria as tabelas no banco de dados se elas ainda não existirem
+    e aplica colunas incrementais necessárias ao monitoramento adaptativo.
     """
     inspector = inspect(engine)
     if not inspector.has_table('monitored_processes') or \
@@ -108,6 +144,7 @@ def init_db():
         print("Tabelas criadas/atualizadas com sucesso.")
     else:
         print("Tabelas já existem no banco de dados.")
+    _ensure_adaptive_columns()
 
 # Exemplo de como usar a sessão em outras partes do código:
 # def get_db():
